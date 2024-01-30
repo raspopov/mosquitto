@@ -4,12 +4,14 @@ Copyright (c) 2011-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -53,6 +55,7 @@ int mosquitto_loop_start(struct mosquitto *mosq)
 		return MOSQ_ERR_ERRNO;
 	}
 #else
+	UNUSED(mosq);
 	return MOSQ_ERR_NOT_SUPPORTED;
 #endif
 }
@@ -77,7 +80,7 @@ int mosquitto_loop_stop(struct mosquitto *mosq, bool force)
 		send(mosq->sockpairW, &sockpair_data, 1, 0);
 #endif
 	}
-	
+
 #ifdef HAVE_PTHREAD_CANCEL
 	if(force){
 		pthread_cancel(mosq->thread_id);
@@ -89,6 +92,8 @@ int mosquitto_loop_stop(struct mosquitto *mosq, bool force)
 
 	return MOSQ_ERR_SUCCESS;
 #else
+	UNUSED(mosq);
+	UNUSED(force);
 	return MOSQ_ERR_NOT_SUPPORTED;
 #endif
 }
@@ -97,7 +102,6 @@ int mosquitto_loop_stop(struct mosquitto *mosq, bool force)
 void *mosquitto__thread_main(void *obj)
 {
 	struct mosquitto *mosq = obj;
-	int state;
 #ifndef WIN32
 	struct timespec ts;
 	ts.tv_sec = 0;
@@ -107,8 +111,7 @@ void *mosquitto__thread_main(void *obj)
 	if(!mosq) return NULL;
 
 	do{
-		state = mosquitto__get_state(mosq);
-		if(state == mosq_cs_new){
+		if(mosquitto__get_state(mosq) == mosq_cs_new){
 #ifdef WIN32
 			Sleep(10);
 #else
@@ -125,6 +128,9 @@ void *mosquitto__thread_main(void *obj)
 	}else{
 		/* Sleep for our keepalive value. publish() etc. will wake us up. */
 		mosquitto_loop_forever(mosq, mosq->keepalive*1000, 1);
+	}
+	if(mosq->threaded == mosq_ts_self){
+		mosq->threaded = mosq_ts_none;
 	}
 
 	return obj;

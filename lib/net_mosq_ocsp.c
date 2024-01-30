@@ -11,6 +11,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Dr. Lars Voelker, BMW AG
 */
@@ -62,8 +64,11 @@ int mosquitto__verify_ocsp_status_cb(SSL * ssl, void *arg)
 	OCSP_BASICRESP *br = NULL;
 	X509_STORE     *st = NULL;
 	STACK_OF(X509) *ch = NULL;
+	long len;
 
-	long len = SSL_get_tlsext_status_ocsp_resp(mosq->ssl, &p);
+	UNUSED(ssl);
+
+	len = SSL_get_tlsext_status_ocsp_resp(mosq->ssl, &p);
 	log__printf(mosq, MOSQ_LOG_DEBUG, "OCSP: SSL_get_tlsext_status_ocsp_resp returned %ld bytes", len);
 
 	/* the following functions expect a const pointer */

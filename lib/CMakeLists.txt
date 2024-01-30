@@ -51,6 +51,7 @@ set(C_SRC
 	send_mosq.c send_mosq.h
 	socks_mosq.c
 	srv_mosq.c
+	strings_mosq.c
 	thread_mosq.c
 	time_mosq.c
 	tls_mosq.c
@@ -93,9 +94,14 @@ set_target_properties(libmosquitto PROPERTIES
 	OUTPUT_NAME mosquitto
 	VERSION ${VERSION}
 	SOVERSION 1
+	LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/linker.version
+	LINK_FLAGS "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/linker.version"
 )
 
-install(TARGETS libmosquitto RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+install(TARGETS libmosquitto
+	RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+	ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+	LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 
 if (WITH_STATIC_LIBRARIES)
 	add_library(libmosquitto_static STATIC ${C_SRC})

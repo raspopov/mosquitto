@@ -4,21 +4,32 @@ Copyright (c) 2016-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
    Dmitry Kaukov - windows named events implementation.
 */
+#ifdef WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#endif
 
 #include "config.h"
 
+#include <stdio.h>
 #include <stdbool.h>
 #include <signal.h>
+
+#include "mosquitto_broker_internal.h"
 
 #ifdef WITH_PERSISTENCE
 extern bool flag_db_backup;
@@ -82,6 +93,8 @@ DWORD WINAPI SigThreadProc(void* data)
 	TCHAR evt_name[MAX_PATH];
 	static HANDLE evt[3];
 	int pid = GetCurrentProcessId();
+
+	UNUSED(data);
 
 	sprintf_s(evt_name, MAX_PATH, "mosq%d_shutdown", pid);
 	evt[0] = CreateEvent(NULL, TRUE, FALSE, evt_name);

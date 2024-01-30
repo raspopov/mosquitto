@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -65,7 +67,7 @@ int mosquitto__check_keepalive(struct mosquitto *mosq)
 #ifndef WITH_BROKER
 	int rc;
 #endif
-	int state;
+	enum mosquitto_client_state state;
 
 	assert(mosq);
 #ifdef WITH_BROKER
@@ -102,6 +104,11 @@ int mosquitto__check_keepalive(struct mosquitto *mosq)
 			pthread_mutex_unlock(&mosq->msgtime_mutex);
 		}else{
 #ifdef WITH_BROKER
+#  ifdef WITH_BRIDGE
+			if(mosq->bridge){
+				context__send_will(mosq);
+			}
+#  endif
 			net__socket_close(mosq);
 #else
 			net__socket_close(mosq);
@@ -295,3 +302,23 @@ enum mosquitto_client_state mosquitto__get_state(struct mosquitto *mosq)
 
 	return state;
 }
+
+#ifndef WITH_BROKER
+void mosquitto__set_request_disconnect(struct mosquitto *mosq, bool request_disconnect)
+{
+	pthread_mutex_lock(&mosq->state_mutex);
+	mosq->request_disconnect = request_disconnect;
+	pthread_mutex_unlock(&mosq->state_mutex);
+}
+
+bool mosquitto__get_request_disconnect(struct mosquitto *mosq)
+{
+	bool request_disconnect;
+
+	pthread_mutex_lock(&mosq->state_mutex);
+	request_disconnect = mosq->request_disconnect;
+	pthread_mutex_unlock(&mosq->state_mutex);
+
+	return request_disconnect;
+}
+#endif

@@ -6,6 +6,7 @@ DISTDIRS=man
 DISTFILES= \
 	apps/ \
 	client/ \
+	cmake/ \
 	deps/ \
 	examples/ \
 	include/ \
@@ -17,6 +18,7 @@ DISTFILES= \
 	plugins/ \
 	security/ \
 	service/ \
+	snap/ \
 	src/ \
 	test/ \
 	\
@@ -27,20 +29,19 @@ DISTFILES= \
 	Makefile \
 	about.html \
 	aclfile.example \
-	compiling.txt \
 	config.h \
 	config.mk \
 	edl-v10 \
-	epl-v10 \
+	epl-v20 \
 	libmosquitto.pc.in \
 	libmosquittopp.pc.in \
 	mosquitto.conf \
-	notice.html \
+	NOTICE.md \
 	pskfile.example \
 	pwfile.example \
-	README-compiling \
-	README-letsencrypt \
-	README-windows.md \
+	README-compiling.md \
+	README-letsencrypt.md \
+	README-windows.txt \
 	README.md
 
 .PHONY : all mosquitto api docs binary check clean reallyclean test install uninstall dist sign copy localdocker
@@ -69,7 +70,7 @@ clean :
 	set -e; for d in ${DOCDIRS}; do $(MAKE) -C $${d} clean; done
 	$(MAKE) -C test clean
 
-reallyclean : 
+reallyclean :
 	set -e; for d in ${DIRS}; do $(MAKE) -C $${d} reallyclean; done
 	set -e; for d in ${DOCDIRS}; do $(MAKE) -C $${d} reallyclean; done
 	$(MAKE) -C test reallyclean
@@ -86,7 +87,7 @@ ptest : mosquitto
 utest : mosquitto
 	$(MAKE) -C test utest
 
-install : mosquitto
+install : all
 	set -e; for d in ${DIRS}; do $(MAKE) -C $${d} install; done
 ifeq ($(WITH_DOCS),yes)
 	set -e; for d in ${DOCDIRS}; do $(MAKE) -C $${d} install; done
@@ -106,7 +107,6 @@ uninstall :
 
 dist : reallyclean
 	set -e; for d in ${DISTDIRS}; do $(MAKE) -C $${d} dist; done
-	
 	mkdir -p dist/mosquitto-${VERSION}
 	cp -r ${DISTFILES} dist/mosquitto-${VERSION}/
 	cd dist; tar -zcf mosquitto-${VERSION}.tar.gz mosquitto-${VERSION}/
@@ -124,7 +124,6 @@ coverage :
 
 localdocker : reallyclean
 	set -e; for d in ${DISTDIRS}; do $(MAKE) -C $${d} dist; done
-	
 	rm -rf dockertmp/
 	mkdir -p dockertmp/mosquitto-${VERSION}
 	cp -r ${DISTFILES} dockertmp/mosquitto-${VERSION}/

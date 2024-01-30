@@ -4,12 +4,14 @@ Copyright (c) 2016-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -155,19 +157,29 @@ int plugin__handle_message(struct mosquitto *context, struct mosquitto_msg_store
 
 	DL_FOREACH(opts->plugin_callbacks.message, cb_base){
 		rc = cb_base->cb(MOSQ_EVT_MESSAGE, &event_data, cb_base->userdata);
+
+		if(stored->topic != event_data.topic){
+			mosquitto__free(stored->topic);
+			stored->topic = event_data.topic;
+		}
+
+		if(stored->payload != event_data.payload){
+			mosquitto__free(stored->payload);
+			stored->payload = event_data.payload;
+			stored->payloadlen = event_data.payloadlen;
+		}
+
+		if(stored->properties != event_data.properties){
+			mosquitto_property_free_all(&stored->properties);
+			stored->properties = event_data.properties;
+		}
+
 		if(rc != MOSQ_ERR_SUCCESS){
 			break;
 		}
 	}
 
-	stored->topic = event_data.topic;
-	if(stored->payload != event_data.payload){
-		mosquitto__free(stored->payload);
-		stored->payload = event_data.payload;
-		stored->payloadlen = event_data.payloadlen;
-	}
 	stored->retain = event_data.retain;
-	stored->properties = event_data.properties;
 
 	return rc;
 }
@@ -178,10 +190,18 @@ void plugin__handle_tick(void)
 	struct mosquitto_evt_tick event_data;
 	struct mosquitto__callback *cb_base;
 	struct mosquitto__security_options *opts;
+	int i;
 
-	// FIXME - set now_s and now_ns to avoid need for multiple time lookups
+	/* FIXME - set now_s and now_ns to avoid need for multiple time lookups */
 	if(db.config->per_listener_settings){
-		// FIXME - iterate over all listeners
+		for(i=0; i < db.config->listener_count; i++){
+			opts = &db.config->listeners[i].security_options;
+			memset(&event_data, 0, sizeof(event_data));
+
+			DL_FOREACH(opts->plugin_callbacks.tick, cb_base){
+				cb_base->cb(MOSQ_EVT_TICK, &event_data, cb_base->userdata);
+			}
+		}
 	}else{
 		opts = &db.config->security_options;
 		memset(&event_data, 0, sizeof(event_data));
@@ -272,7 +292,9 @@ int mosquitto_callback_unregister(
 	struct mosquitto__callback **cb_base = NULL;
 	struct mosquitto__security_options *security_options;
 
-	if(cb_func == NULL) return MOSQ_ERR_INVAL;
+	if(identifier == NULL || cb_func == NULL){
+		return MOSQ_ERR_INVAL;
+	}
 
 	if(identifier->listener == NULL){
 		security_options = &db.config->security_options;
@@ -311,7 +333,7 @@ int mosquitto_callback_unregister(
 			cb_base = &security_options->plugin_callbacks.disconnect;
 			break;
 		default:
-			return MOSQ_ERR_INVAL;
+			return MOSQ_ERR_NOT_SUPPORTED;
 			break;
 	}
 

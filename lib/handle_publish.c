@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -27,6 +29,7 @@ Contributors:
 #include "messages_mosq.h"
 #include "packet_mosq.h"
 #include "property_mosq.h"
+#include "read_handle.h"
 #include "send_mosq.h"
 #include "time_mosq.h"
 #include "util_mosq.h"
@@ -37,15 +40,13 @@ int handle__publish(struct mosquitto *mosq)
 	uint8_t header;
 	struct mosquitto_message_all *message;
 	int rc = 0;
-	uint16_t mid;
+	uint16_t mid = 0;
 	uint16_t slen;
 	mosquitto_property *properties = NULL;
-	int state;
 
 	assert(mosq);
 
-	state = mosquitto__get_state(mosq);
-	if(state != mosq_cs_active){
+	if(mosquitto__get_state(mosq) != mosq_cs_active){
 		return MOSQ_ERR_PROTOCOL;
 	}
 
@@ -91,7 +92,10 @@ int handle__publish(struct mosquitto *mosq)
 
 	if(mosq->protocol == mosq_p_mqtt5){
 		rc = property__read_all(CMD_PUBLISH, &mosq->in_packet, &properties);
-		if(rc) return rc;
+		if(rc){
+			message__cleanup(&message);
+			return rc;
+		}
 	}
 
 	message->msg.payloadlen = (int)(mosq->in_packet.remaining_length - mosq->in_packet.pos);
@@ -111,7 +115,7 @@ int handle__publish(struct mosquitto *mosq)
 	}
 	log__printf(mosq, MOSQ_LOG_DEBUG,
 			"Client %s received PUBLISH (d%d, q%d, r%d, m%d, '%s', ... (%ld bytes))",
-			mosq->id, message->dup, message->msg.qos, message->msg.retain,
+			SAFE_PRINT(mosq->id), message->dup, message->msg.qos, message->msg.retain,
 			message->msg.mid, message->msg.topic,
 			(long)message->msg.payloadlen);
 

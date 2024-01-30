@@ -60,6 +60,7 @@ set (MOSQ_SRCS
 	send_unsuback.c
 	../lib/send_unsubscribe.c
 	session_expiry.c
+	../lib/strings_mosq.c
 	subs.c
 	sys_tree.c sys_tree.h
 	../lib/time_mosq.c
@@ -75,6 +76,11 @@ set (MOSQ_SRCS
 if (WITH_BUNDLED_DEPS)
 	include_directories(${mosquitto_SOURCE_DIR} ${mosquitto_SOURCE_DIR}/deps)
 endif (WITH_BUNDLED_DEPS)
+
+find_path(HAVE_SYS_EPOLL_H sys/epoll.h)
+if (HAVE_SYS_EPOLL_H)
+	add_definitions("-DWITH_EPOLL")
+endif()
 
 option(INC_BRIDGE_SUPPORT
 	"Include bridge support for connecting to other brokers?" ON)
@@ -129,8 +135,15 @@ endif (CMAKE_SYSTEM_NAME STREQUAL Linux)
 option(WITH_WEBSOCKETS "Include websockets support?" OFF)
 option(STATIC_WEBSOCKETS "Use the static libwebsockets library?" OFF)
 if (WITH_WEBSOCKETS)
+	find_package(libwebsockets)
 	add_definitions("-DWITH_WEBSOCKETS")
 endif (WITH_WEBSOCKETS)
+
+option(WITH_CONTROL "Include $CONTROL topic support?" ON)
+if (WITH_CONTROL)
+	add_definitions("-DWITH_CONTROL")
+endif (WITH_CONTROL)
+
 
 if (WIN32 OR CYGWIN)
 	set (MOSQ_SRCS ${MOSQ_SRCS} service.c)
@@ -162,6 +175,8 @@ if (UNIX)
 	    set (MOSQ_LIBS ${MOSQ_LIBS} m)
 	elseif (${CMAKE_SYSTEM_NAME} MATCHES "NetBSD")
 		set (MOSQ_LIBS ${MOSQ_LIBS} m)
+	elseif (${CMAKE_SYSTEM_NAME} MATCHES "Haiku")
+	    set (MOSQ_LIBS ${MOSQ_LIBS} m network)
     elseif(QNX)
         set(MOSQ_LIBS ${MOSQ_LIBS} m socket)
     else(APPLE)

@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -17,21 +19,37 @@ Contributors:
 #ifndef MOSQUITTO_H
 #define MOSQUITTO_H
 
+/*
+ * File: mosquitto.h
+ *
+ * This header contains functions and definitions for use with libmosquitto, the Mosquitto client library.
+ *
+ * The definitions are also used in Mosquitto broker plugins, and some functions are available to plugins.
+ */
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#if defined(WIN32) && !defined(WITH_BROKER) && !defined(LIBMOSQUITTO_STATIC)
-#	ifdef libmosquitto_EXPORTS
-#		define libmosq_EXPORT  __declspec(dllexport)
-#	else
-#		define libmosq_EXPORT  __declspec(dllimport)
-#	endif
+
+#ifdef WIN32
+#  ifdef mosquitto_EXPORTS
+#    define libmosq_EXPORT __declspec(dllexport)
+#  else
+#    ifndef LIBMOSQUITTO_STATIC
+#      ifdef libmosquitto_EXPORTS
+#        define libmosq_EXPORT  __declspec(dllexport)
+#      else
+#        define libmosq_EXPORT  __declspec(dllimport)
+#      endif
+#    else
+#      define libmosq_EXPORT
+#    endif
+#  endif
 #else
-#	define libmosq_EXPORT
+#  define libmosq_EXPORT
 #endif
 
-#if defined(_MSC_VER) && _MSC_VER < 1900
+#if defined(_MSC_VER) && _MSC_VER < 1900 && !defined(bool)
 #	ifndef __cplusplus
 #		define bool char
 #		define true 1
@@ -46,9 +64,9 @@ extern "C" {
 #include <stddef.h>
 #include <stdint.h>
 
-#define LIBMOSQUITTO_MAJOR 1
-#define LIBMOSQUITTO_MINOR 6
-#define LIBMOSQUITTO_REVISION 12
+#define LIBMOSQUITTO_MAJOR 2
+#define LIBMOSQUITTO_MINOR 0
+#define LIBMOSQUITTO_REVISION 18
 /* LIBMOSQUITTO_VERSION_NUMBER looks like 1002001 for e.g. version 1.2.1. */
 #define LIBMOSQUITTO_VERSION_NUMBER (LIBMOSQUITTO_MAJOR*1000000+LIBMOSQUITTO_MINOR*1000+LIBMOSQUITTO_REVISION)
 
@@ -65,7 +83,8 @@ extern "C" {
 #define MOSQ_LOG_INTERNAL		0x80000000U
 #define MOSQ_LOG_ALL			0xFFFFFFFFU
 
-/* Error values */
+/* Enum: mosq_err_t
+ * Integer values returned from many libmosquitto functions. */
 enum mosq_err_t {
 	MOSQ_ERR_AUTH_CONTINUE = -4,
 	MOSQ_ERR_NO_SUBSCRIBERS = -3,
@@ -105,7 +124,12 @@ enum mosq_err_t {
 	MOSQ_ERR_ALREADY_EXISTS = 31,
 };
 
-/* Option values */
+/* Enum: mosq_opt_t
+ *
+ * Client options.
+ *
+ * See <mosquitto_int_option>, <mosquitto_string_option>, and <mosquitto_void_option>.
+ */
 enum mosq_opt_t {
 	MOSQ_OPT_PROTOCOL_VERSION = 1,
 	MOSQ_OPT_SSL_CTX = 2,
@@ -119,6 +143,7 @@ enum mosq_opt_t {
 	MOSQ_OPT_TLS_ALPN = 10,
 	MOSQ_OPT_TCP_NODELAY = 11,
 	MOSQ_OPT_BIND_ADDRESS = 12,
+	MOSQ_OPT_TLS_USE_OS_CERTS = 13,
 };
 
 
@@ -129,6 +154,24 @@ enum mosq_opt_t {
 #define MQTT_PROTOCOL_V311 4
 #define MQTT_PROTOCOL_V5 5
 
+/* Struct: mosquitto_message
+ *
+ * Contains details of a PUBLISH message.
+ *
+ * int mid - the message/packet ID of the PUBLISH message, assuming this is a
+ *           QoS 1 or 2 message. Will be set to 0 for QoS 0 messages.
+ *
+ * char *topic - the topic the message was delivered on.
+ *
+ * void *payload - the message payload. This will be payloadlen bytes long, and
+ *                 may be NULL if a zero length payload was sent.
+ *
+ * int payloadlen - the length of the payload, in bytes.
+ *
+ * int qos - the quality of service of the message, 0, 1, or 2.
+ *
+ * bool retain - set to true for stale retained messages.
+ */
 struct mosquitto_message{
 	int mid;
 	char *topic;
@@ -145,6 +188,9 @@ typedef struct mqtt5__property mosquitto_property;
  * Topic: Threads
  *	libmosquitto provides thread safe operation, with the exception of
  *	<mosquitto_lib_init> which is not thread safe.
+ *
+ *	If the library has been compiled without thread support it is *not*
+ *	guaranteed to be thread safe.
  *
  *	If your application uses threads you must use <mosquitto_threaded_set> to
  *	tell the library this is the case, otherwise it makes some optimisations
@@ -300,9 +346,10 @@ libmosq_EXPORT void mosquitto_destroy(struct mosquitto *mosq);
  *                  callbacks that are specified.
  *
  * Returns:
- * 	MOSQ_ERR_SUCCESS - on success.
- * 	MOSQ_ERR_INVAL -   if the input parameters were invalid.
- * 	MOSQ_ERR_NOMEM -   if an out of memory condition occurred.
+ * 	MOSQ_ERR_SUCCESS -        on success.
+ * 	MOSQ_ERR_INVAL -          if the input parameters were invalid.
+ * 	MOSQ_ERR_NOMEM -          if an out of memory condition occurred.
+ * 	MOSQ_ERR_MALFORMED_UTF8 - if the client id is not valid UTF-8.
  *
  * See Also:
  * 	<mosquitto_new>, <mosquitto_destroy>
@@ -320,6 +367,9 @@ libmosq_EXPORT int mosquitto_reinitialise(struct mosquitto *mosq, const char *id
  *
  * Configure will information for a mosquitto instance. By default, clients do
  * not have a will.  This must be called before calling <mosquitto_connect>.
+ *
+ * It is valid to use this function for clients using all MQTT protocol versions.
+ * If you need to set MQTT v5 Will properties, use <mosquitto_will_set_v5> instead.
  *
  * Parameters:
  * 	mosq -       a valid mosquitto instance.
@@ -347,6 +397,14 @@ libmosq_EXPORT int mosquitto_will_set(struct mosquitto *mosq, const char *topic,
  * Configure will information for a mosquitto instance, with attached
  * properties. By default, clients do not have a will.  This must be called
  * before calling <mosquitto_connect>.
+ *
+ * If the mosquitto instance `mosq` is using MQTT v5, the `properties` argument
+ * will be applied to the Will. For MQTT v3.1.1 and below, the `properties`
+ * argument will be ignored.
+ *
+ * Set your client to use MQTT v5 immediately after it is created:
+ *
+ * mosquitto_int_option(mosq, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5);
  *
  * Parameters:
  * 	mosq -       a valid mosquitto instance.
@@ -431,12 +489,16 @@ libmosq_EXPORT int mosquitto_username_pw_set(struct mosquitto *mosq, const char 
  *
  * Connect to an MQTT broker.
  *
+ * It is valid to use this function for clients using all MQTT protocol versions.
+ * If you need to set MQTT v5 CONNECT properties, use <mosquitto_connect_bind_v5>
+ * instead.
+ *
  * Parameters:
  * 	mosq -      a valid mosquitto instance.
  * 	host -      the hostname or ip address of the broker to connect to.
  * 	port -      the network port to connect to. Usually 1883.
- * 	keepalive - the number of seconds after which the broker should send a PING
- *              message to the client if no other messages have been exchanged
+ * 	keepalive - the number of seconds after which the client should send a PING
+ *              message to the broker if no other messages have been exchanged
  *              in that time.
  *
  * Returns:
@@ -467,11 +529,12 @@ libmosq_EXPORT int mosquitto_connect(struct mosquitto *mosq, const char *host, i
  * 	mosq -         a valid mosquitto instance.
  * 	host -         the hostname or ip address of the broker to connect to.
  * 	port -         the network port to connect to. Usually 1883.
- * 	keepalive -    the number of seconds after which the broker should send a PING
- *                 message to the client if no other messages have been exchanged
+ * 	keepalive -    the number of seconds after which the client should send a PING
+ *                 message to the broker if no other messages have been exchanged
  *                 in that time.
  *  bind_address - the hostname or ip address of the local network interface to
- *                 bind to.
+ *                 bind to. If you do not want to bind to a specific interface,
+ *                 set this to NULL.
  *
  * Returns:
  * 	MOSQ_ERR_SUCCESS - on success.
@@ -498,15 +561,24 @@ libmosq_EXPORT int mosquitto_connect_bind(struct mosquitto *mosq, const char *ho
  * properties, then attach them to this publish. Properties need freeing with
  * <mosquitto_property_free_all>.
  *
+ * If the mosquitto instance `mosq` is using MQTT v5, the `properties` argument
+ * will be applied to the CONNECT message. For MQTT v3.1.1 and below, the
+ * `properties` argument will be ignored.
+ *
+ * Set your client to use MQTT v5 immediately after it is created:
+ *
+ * mosquitto_int_option(mosq, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5);
+ *
  * Parameters:
  * 	mosq -         a valid mosquitto instance.
  * 	host -         the hostname or ip address of the broker to connect to.
  * 	port -         the network port to connect to. Usually 1883.
- * 	keepalive -    the number of seconds after which the broker should send a PING
- *                 message to the client if no other messages have been exchanged
+ * 	keepalive -    the number of seconds after which the client should send a PING
+ *                 message to the broker if no other messages have been exchanged
  *                 in that time.
  *  bind_address - the hostname or ip address of the local network interface to
- *                 bind to.
+ *                 bind to. If you do not want to bind to a specific interface,
+ *                 set this to NULL.
  *  properties - the MQTT 5 properties for the connect (not for the Will).
  *
  * Returns:
@@ -542,8 +614,8 @@ libmosq_EXPORT int mosquitto_connect_bind_v5(struct mosquitto *mosq, const char 
  * 	mosq -      a valid mosquitto instance.
  * 	host -      the hostname or ip address of the broker to connect to.
  * 	port -      the network port to connect to. Usually 1883.
- * 	keepalive - the number of seconds after which the broker should send a PING
- *              message to the client if no other messages have been exchanged
+ * 	keepalive - the number of seconds after which the client should send a PING
+ *              message to the broker if no other messages have been exchanged
  *              in that time.
  *
  * Returns:
@@ -577,11 +649,12 @@ libmosq_EXPORT int mosquitto_connect_async(struct mosquitto *mosq, const char *h
  * 	mosq -         a valid mosquitto instance.
  * 	host -         the hostname or ip address of the broker to connect to.
  * 	port -         the network port to connect to. Usually 1883.
- * 	keepalive -    the number of seconds after which the broker should send a PING
- *                 message to the client if no other messages have been exchanged
+ * 	keepalive -    the number of seconds after which the client should send a PING
+ *                 message to the broker if no other messages have been exchanged
  *                 in that time.
  *  bind_address - the hostname or ip address of the local network interface to
- *                 bind to.
+ *                 bind to. If you do not want to bind to a specific interface,
+ *                 set this to NULL.
  *
  * Returns:
  * 	MOSQ_ERR_SUCCESS - on success.
@@ -615,11 +688,12 @@ libmosq_EXPORT int mosquitto_connect_bind_async(struct mosquitto *mosq, const ch
  * Parameters:
  * 	mosq -         a valid mosquitto instance.
  * 	host -         the hostname to search for an SRV record.
- * 	keepalive -    the number of seconds after which the broker should send a PING
- *                 message to the client if no other messages have been exchanged
+ * 	keepalive -    the number of seconds after which the client should send a PING
+ *                 message to the broker if no other messages have been exchanged
  *                 in that time.
  *  bind_address - the hostname or ip address of the local network interface to
- *                 bind to.
+ *                 bind to. If you do not want to bind to a specific interface,
+ *                 set this to NULL.
  *
  * Returns:
  * 	MOSQ_ERR_SUCCESS - on success.
@@ -697,6 +771,10 @@ libmosq_EXPORT int mosquitto_reconnect_async(struct mosquitto *mosq);
  *
  * Disconnect from the broker.
  *
+ * It is valid to use this function for clients using all MQTT protocol versions.
+ * If you need to set MQTT v5 DISCONNECT properties, use
+ * <mosquitto_disconnect_v5> instead.
+ *
  * Parameters:
  *	mosq - a valid mosquitto instance.
  *
@@ -715,6 +793,14 @@ libmosq_EXPORT int mosquitto_disconnect(struct mosquitto *mosq);
  * Use e.g. <mosquitto_property_add_string> and similar to create a list of
  * properties, then attach them to this publish. Properties need freeing with
  * <mosquitto_property_free_all>.
+ *
+ * If the mosquitto instance `mosq` is using MQTT v5, the `properties` argument
+ * will be applied to the DISCONNECT message. For MQTT v3.1.1 and below, the
+ * `properties` argument will be ignored.
+ *
+ * Set your client to use MQTT v5 immediately after it is created:
+ *
+ * mosquitto_int_option(mosq, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5);
  *
  * Parameters:
  *	mosq - a valid mosquitto instance.
@@ -740,6 +826,10 @@ libmosq_EXPORT int mosquitto_disconnect_v5(struct mosquitto *mosq, int reason_co
  * Function: mosquitto_publish
  *
  * Publish a message on a given topic.
+ *
+ * It is valid to use this function for clients using all MQTT protocol versions.
+ * If you need to set MQTT v5 PUBLISH properties, use <mosquitto_publish_v5>
+ * instead.
  *
  * Parameters:
  * 	mosq -       a valid mosquitto instance.
@@ -788,7 +878,13 @@ libmosq_EXPORT int mosquitto_publish(struct mosquitto *mosq, int *mid, const cha
  * properties, then attach them to this publish. Properties need freeing with
  * <mosquitto_property_free_all>.
  *
- * Requires the mosquitto instance to be connected with MQTT 5.
+ * If the mosquitto instance `mosq` is using MQTT v5, the `properties` argument
+ * will be applied to the PUBLISH message. For MQTT v3.1.1 and below, the
+ * `properties` argument will be ignored.
+ *
+ * Set your client to use MQTT v5 immediately after it is created:
+ *
+ * mosquitto_int_option(mosq, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5);
  *
  * Parameters:
  * 	mosq -       a valid mosquitto instance.
@@ -841,6 +937,10 @@ libmosq_EXPORT int mosquitto_publish_v5(
  *
  * Subscribe to a topic.
  *
+ * It is valid to use this function for clients using all MQTT protocol versions.
+ * If you need to set MQTT v5 SUBSCRIBE properties, use <mosquitto_subscribe_v5>
+ * instead.
+ *
  * Parameters:
  *	mosq - a valid mosquitto instance.
  *	mid -  a pointer to an int. If not NULL, the function will set this to
@@ -870,8 +970,13 @@ libmosq_EXPORT int mosquitto_subscribe(struct mosquitto *mosq, int *mid, const c
  * properties, then attach them to this publish. Properties need freeing with
  * <mosquitto_property_free_all>.
  *
- * Requires the mosquitto instance to be connected with MQTT 5.
+ * If the mosquitto instance `mosq` is using MQTT v5, the `properties` argument
+ * will be applied to the PUBLISH message. For MQTT v3.1.1 and below, the
+ * `properties` argument will be ignored.
  *
+ * Set your client to use MQTT v5 immediately after it is created:
+ *
+ * mosquitto_int_option(mosq, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5);
  *
  * Parameters:
  *	mosq - a valid mosquitto instance.
@@ -962,9 +1067,21 @@ libmosq_EXPORT int mosquitto_unsubscribe(struct mosquitto *mosq, int *mid, const
  *
  * Unsubscribe from a topic, with attached MQTT properties.
  *
+ * It is valid to use this function for clients using all MQTT protocol versions.
+ * If you need to set MQTT v5 UNSUBSCRIBE properties, use
+ * <mosquitto_unsubscribe_v5> instead.
+ *
  * Use e.g. <mosquitto_property_add_string> and similar to create a list of
  * properties, then attach them to this publish. Properties need freeing with
  * <mosquitto_property_free_all>.
+ *
+ * If the mosquitto instance `mosq` is using MQTT v5, the `properties` argument
+ * will be applied to the PUBLISH message. For MQTT v3.1.1 and below, the
+ * `properties` argument will be ignored.
+ *
+ * Set your client to use MQTT v5 immediately after it is created:
+ *
+ * mosquitto_int_option(mosq, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5);
  *
  * Parameters:
  *	mosq - a valid mosquitto instance.
@@ -1451,6 +1568,10 @@ libmosq_EXPORT int mosquitto_opts_set(struct mosquitto *mosq, enum mosq_opt_t op
  *	MOSQ_OPT_TLS_OCSP_REQUIRED - Set whether OCSP checking on TLS
  *	          connections is required. Set to 1 to enable checking,
  *	          or 0 (the default) for no checking.
+ *
+ *	MOSQ_OPT_TLS_USE_OS_CERTS - Set to 1 to instruct the client to load and
+ *	          trust OS provided CA certificates for use with TLS connections.
+ *	          Set to 0 (the default) to only use manually specified CA certs.
  */
 libmosq_EXPORT int mosquitto_int_option(struct mosquitto *mosq, enum mosq_opt_t option, int value);
 
@@ -1469,6 +1590,9 @@ libmosq_EXPORT int mosquitto_int_option(struct mosquitto *mosq, enum mosq_opt_t 
  *	MOSQ_OPT_TLS_ENGINE - Configure the client for TLS Engine support.
  *	          Pass a TLS Engine ID to be used when creating TLS
  *	          connections. Must be set before <mosquitto_connect>.
+ *	          Must be a valid engine, and note that the string will not be used
+ *	          until a connection attempt is made so this function will return
+ *	          success even if an invalid engine string is passed.
  *
  *	MOSQ_OPT_TLS_KEYFORM - Configure the client to treat the keyfile
  *	          differently depending on its type.  Must be set
@@ -1514,40 +1638,6 @@ libmosq_EXPORT int mosquitto_string_option(struct mosquitto *mosq, enum mosq_opt
  *	          This option is only available for openssl 1.1.0 and higher.
  */
 libmosq_EXPORT int mosquitto_void_option(struct mosquitto *mosq, enum mosq_opt_t option, void *value);
-
-/*
- * Function: mosquitto_string_option
- *
- * Used to set const char* options for the client.
- *
- * Parameters:
- *	mosq -   a valid mosquitto instance.
- *	option - the option to set.
- *	value -  the option specific value.
- *
- * Options:
- *	MOSQ_OPT_TLS_ENGINE
- *	          Configure the client for TLS Engine support. Pass a TLS Engine ID
- *	          to be used when creating TLS connections.
- *	          Must be set before <mosquitto_connect>.
- *	MOSQ_OPT_TLS_KEYFORM
- *            Configure the client to treat the keyfile differently depending
- *            on its type.  Must be set before <mosquitto_connect>.
- *	          Set as either "pem" or "engine", to determine from where the
- *	          private key for a TLS connection will be obtained. Defaults to
- *	          "pem", a normal private key file.
- *	MOSQ_OPT_TLS_KPASS_SHA1
- *	          Where the TLS Engine requires the use of a password to be
- *	          accessed, this option allows a hex encoded SHA1 hash of the
- *	          private key password to be passed to the engine directly.
- *	          Must be set before <mosquitto_connect>.
- *	MOSQ_OPT_TLS_ALPN
- *	          If the broker being connected to has multiple services available
- *	          on a single TLS port, such as both MQTT and WebSockets, use this
- *	          option to configure the ALPN option for the connection.
- */
-libmosq_EXPORT int mosquitto_string_option(struct mosquitto *mosq, enum mosq_opt_t option, const char *value);
-
 
 /*
  * Function: mosquitto_reconnect_delay_set
@@ -1822,7 +1912,7 @@ libmosq_EXPORT void *mosquitto_ssl_get(struct mosquitto *mosq);
 /*
  * Function: mosquitto_connect_callback_set
  *
- * Set the connect callback. This is called when the broker sends a CONNACK
+ * Set the connect callback. This is called when the library receives a CONNACK
  * message in response to a connection.
  *
  * Parameters:
@@ -1843,7 +1933,7 @@ libmosq_EXPORT void mosquitto_connect_callback_set(struct mosquitto *mosq, void 
 /*
  * Function: mosquitto_connect_with_flags_callback_set
  *
- * Set the connect callback. This is called when the broker sends a CONNACK
+ * Set the connect callback. This is called when the library receives a CONNACK
  * message in response to a connection.
  *
  * Parameters:
@@ -1865,8 +1955,12 @@ libmosq_EXPORT void mosquitto_connect_with_flags_callback_set(struct mosquitto *
 /*
  * Function: mosquitto_connect_v5_callback_set
  *
- * Set the connect callback. This is called when the broker sends a CONNACK
+ * Set the connect callback. This is called when the library receives a CONNACK
  * message in response to a connection.
+ *
+ * It is valid to set this callback for all MQTT protocol versions. If it is
+ * used with MQTT clients that use MQTT v3.1.1 or earlier, then the `props`
+ * argument will always be NULL.
  *
  * Parameters:
  *  mosq -       a valid mosquitto instance.
@@ -1912,6 +2006,10 @@ libmosq_EXPORT void mosquitto_disconnect_callback_set(struct mosquitto *mosq, vo
  * Set the disconnect callback. This is called when the broker has received the
  * DISCONNECT command and has disconnected the client.
  *
+ * It is valid to set this callback for all MQTT protocol versions. If it is
+ * used with MQTT clients that use MQTT v3.1.1 or earlier, then the `props`
+ * argument will always be NULL.
+ *
  * Parameters:
  *  mosq -          a valid mosquitto instance.
  *  on_disconnect - a callback function in the following form:
@@ -1925,13 +2023,21 @@ libmosq_EXPORT void mosquitto_disconnect_callback_set(struct mosquitto *mosq, vo
  *         indicates that the disconnect is unexpected.
  *  props - list of MQTT 5 properties, or NULL
  */
-libmosq_EXPORT void mosquitto_disconnect_v5_callback_set(struct mosquitto *mosq, void (*on_disconnect)(struct mosquitto *, void *, int, const mosquitto_property *));
+libmosq_EXPORT void mosquitto_disconnect_v5_callback_set(struct mosquitto *mosq, void (*on_disconnect)(struct mosquitto *, void *, int, const mosquitto_property *props));
 
 /*
  * Function: mosquitto_publish_callback_set
  *
  * Set the publish callback. This is called when a message initiated with
- * <mosquitto_publish> has been sent to the broker successfully.
+ * <mosquitto_publish> has been sent to the broker. "Sent" means different
+ * things depending on the QoS of the message:
+ *
+ * QoS 0: The PUBLISH was passed to the local operating system for delivery,
+ *        there is no guarantee that it was delivered to the remote broker.
+ * QoS 1: The PUBLISH was sent to the remote broker and the corresponding
+ *        PUBACK was received by the library.
+ * QoS 2: The PUBLISH was sent to the remote broker and the corresponding
+ *        PUBCOMP was received by the library.
  *
  * Parameters:
  *  mosq -       a valid mosquitto instance.
@@ -1952,6 +2058,19 @@ libmosq_EXPORT void mosquitto_publish_callback_set(struct mosquitto *mosq, void 
  * <mosquitto_publish> has been sent to the broker. This callback will be
  * called both if the message is sent successfully, or if the broker responded
  * with an error, which will be reflected in the reason_code parameter.
+ * "Sent" means different things depending on the QoS of the message:
+ *
+ * QoS 0: The PUBLISH was passed to the local operating system for delivery,
+ *        there is no guarantee that it was delivered to the remote broker.
+ * QoS 1: The PUBLISH was sent to the remote broker and the corresponding
+ *        PUBACK was received by the library.
+ * QoS 2: The PUBLISH was sent to the remote broker and the corresponding
+ *        PUBCOMP was received by the library.
+ *
+ *
+ * It is valid to set this callback for all MQTT protocol versions. If it is
+ * used with MQTT clients that use MQTT v3.1.1 or earlier, then the `props`
+ * argument will always be NULL.
  *
  * Parameters:
  *  mosq -       a valid mosquitto instance.
@@ -1965,13 +2084,13 @@ libmosq_EXPORT void mosquitto_publish_callback_set(struct mosquitto *mosq, void 
  *  reason_code - the MQTT 5 reason code
  *  props - list of MQTT 5 properties, or NULL
  */
-libmosq_EXPORT void mosquitto_publish_v5_callback_set(struct mosquitto *mosq, void (*on_publish)(struct mosquitto *, void *, int, int, const mosquitto_property *));
+libmosq_EXPORT void mosquitto_publish_v5_callback_set(struct mosquitto *mosq, void (*on_publish)(struct mosquitto *, void *, int, int, const mosquitto_property *props));
 
 /*
  * Function: mosquitto_message_callback_set
  *
  * Set the message callback. This is called when a message is received from the
- * broker.
+ * broker and the required QoS flow has completed.
  *
  * Parameters:
  *  mosq -       a valid mosquitto instance.
@@ -1994,7 +2113,11 @@ libmosq_EXPORT void mosquitto_message_callback_set(struct mosquitto *mosq, void 
  * Function: mosquitto_message_v5_callback_set
  *
  * Set the message callback. This is called when a message is received from the
- * broker.
+ * broker and the required QoS flow has completed.
+ *
+ * It is valid to set this callback for all MQTT protocol versions. If it is
+ * used with MQTT clients that use MQTT v3.1.1 or earlier, then the `props`
+ * argument will always be NULL.
  *
  * Parameters:
  *  mosq -       a valid mosquitto instance.
@@ -2012,13 +2135,13 @@ libmosq_EXPORT void mosquitto_message_callback_set(struct mosquitto *mosq, void 
  * See Also:
  * 	<mosquitto_message_copy>
  */
-libmosq_EXPORT void mosquitto_message_v5_callback_set(struct mosquitto *mosq, void (*on_message)(struct mosquitto *, void *, const struct mosquitto_message *, const mosquitto_property *));
+libmosq_EXPORT void mosquitto_message_v5_callback_set(struct mosquitto *mosq, void (*on_message)(struct mosquitto *, void *, const struct mosquitto_message *, const mosquitto_property *props));
 
 /*
  * Function: mosquitto_subscribe_callback_set
  *
- * Set the subscribe callback. This is called when the broker responds to a
- * subscription request.
+ * Set the subscribe callback. This is called when the library receives a
+ * SUBACK message in response to a SUBSCRIBE.
  *
  * Parameters:
  *  mosq -         a valid mosquitto instance.
@@ -2038,8 +2161,12 @@ libmosq_EXPORT void mosquitto_subscribe_callback_set(struct mosquitto *mosq, voi
 /*
  * Function: mosquitto_subscribe_v5_callback_set
  *
- * Set the subscribe callback. This is called when the broker responds to a
- * subscription request.
+ * Set the subscribe callback. This is called when the library receives a
+ * SUBACK message in response to a SUBSCRIBE.
+ *
+ * It is valid to set this callback for all MQTT protocol versions. If it is
+ * used with MQTT clients that use MQTT v3.1.1 or earlier, then the `props`
+ * argument will always be NULL.
  *
  * Parameters:
  *  mosq -         a valid mosquitto instance.
@@ -2055,13 +2182,13 @@ libmosq_EXPORT void mosquitto_subscribe_callback_set(struct mosquitto *mosq, voi
  *                the subscriptions.
  *  props - list of MQTT 5 properties, or NULL
  */
-libmosq_EXPORT void mosquitto_subscribe_v5_callback_set(struct mosquitto *mosq, void (*on_subscribe)(struct mosquitto *, void *, int, int, const int *, const mosquitto_property *));
+libmosq_EXPORT void mosquitto_subscribe_v5_callback_set(struct mosquitto *mosq, void (*on_subscribe)(struct mosquitto *, void *, int, int, const int *, const mosquitto_property *props));
 
 /*
  * Function: mosquitto_unsubscribe_callback_set
  *
- * Set the unsubscribe callback. This is called when the broker responds to a
- * unsubscription request.
+ * Set the unsubscribe callback. This is called when the library receives a
+ * UNSUBACK message in response to an UNSUBSCRIBE.
  *
  * Parameters:
  *  mosq -           a valid mosquitto instance.
@@ -2078,8 +2205,12 @@ libmosq_EXPORT void mosquitto_unsubscribe_callback_set(struct mosquitto *mosq, v
 /*
  * Function: mosquitto_unsubscribe_v5_callback_set
  *
- * Set the unsubscribe callback. This is called when the broker responds to a
- * unsubscription request.
+ * Set the unsubscribe callback. This is called when the library receives a
+ * UNSUBACK message in response to an UNSUBSCRIBE.
+ *
+ * It is valid to set this callback for all MQTT protocol versions. If it is
+ * used with MQTT clients that use MQTT v3.1.1 or earlier, then the `props`
+ * argument will always be NULL.
  *
  * Parameters:
  *  mosq -           a valid mosquitto instance.
@@ -2092,7 +2223,7 @@ libmosq_EXPORT void mosquitto_unsubscribe_callback_set(struct mosquitto *mosq, v
  *  mid -  the message id of the unsubscribe message.
  *  props - list of MQTT 5 properties, or NULL
  */
-libmosq_EXPORT void mosquitto_unsubscribe_v5_callback_set(struct mosquitto *mosq, void (*on_unsubscribe)(struct mosquitto *, void *, int, const mosquitto_property *));
+libmosq_EXPORT void mosquitto_unsubscribe_v5_callback_set(struct mosquitto *mosq, void (*on_unsubscribe)(struct mosquitto *, void *, int, const mosquitto_property *props));
 
 /*
  * Function: mosquitto_log_callback_set
@@ -3043,8 +3174,8 @@ libmosq_EXPORT void mosquitto_property_free_all(mosquitto_property **properties)
  * Function: mosquitto_property_copy_all
  *
  * Parameters:
- *    dest : pointer for new property list
- *    src : property list
+ *    dest - pointer for new property list
+ *    src - property list
  *
  * Returns:
  *    MOSQ_ERR_SUCCESS - on successful copy

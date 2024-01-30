@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -47,7 +49,7 @@ Contributors:
 int packet__read_byte(struct mosquitto__packet *packet, uint8_t *byte)
 {
 	assert(packet);
-	if(packet->pos+1 > packet->remaining_length) return MOSQ_ERR_PROTOCOL;
+	if(packet->pos+1 > packet->remaining_length) return MOSQ_ERR_MALFORMED_PACKET;
 
 	*byte = packet->payload[packet->pos];
 	packet->pos++;
@@ -69,7 +71,7 @@ void packet__write_byte(struct mosquitto__packet *packet, uint8_t byte)
 int packet__read_bytes(struct mosquitto__packet *packet, void *bytes, uint32_t count)
 {
 	assert(packet);
-	if(packet->pos+count > packet->remaining_length) return MOSQ_ERR_PROTOCOL;
+	if(packet->pos+count > packet->remaining_length) return MOSQ_ERR_MALFORMED_PACKET;
 
 	memcpy(bytes, &(packet->payload[packet->pos]), count);
 	packet->pos += count;
@@ -103,7 +105,7 @@ int packet__read_binary(struct mosquitto__packet *packet, uint8_t **data, uint16
 		return MOSQ_ERR_SUCCESS;
 	}
 
-	if(packet->pos+slen > packet->remaining_length) return MOSQ_ERR_PROTOCOL;
+	if(packet->pos+slen > packet->remaining_length) return MOSQ_ERR_MALFORMED_PACKET;
 
 	*data = mosquitto__malloc(slen+1U);
 	if(*data){
@@ -151,7 +153,7 @@ int packet__read_uint16(struct mosquitto__packet *packet, uint16_t *word)
 	uint8_t msb, lsb;
 
 	assert(packet);
-	if(packet->pos+2 > packet->remaining_length) return MOSQ_ERR_PROTOCOL;
+	if(packet->pos+2 > packet->remaining_length) return MOSQ_ERR_MALFORMED_PACKET;
 
 	msb = packet->payload[packet->pos];
 	packet->pos++;
@@ -177,7 +179,7 @@ int packet__read_uint32(struct mosquitto__packet *packet, uint32_t *word)
 	int i;
 
 	assert(packet);
-	if(packet->pos+4 > packet->remaining_length) return MOSQ_ERR_PROTOCOL;
+	if(packet->pos+4 > packet->remaining_length) return MOSQ_ERR_MALFORMED_PACKET;
 
 	for(i=0; i<4; i++){
 		val = (val << 8) + packet->payload[packet->pos];
@@ -217,7 +219,7 @@ int packet__read_varint(struct mosquitto__packet *packet, uint32_t *word, uint8_
 			if((byte & 128) == 0){
 				if(lbytes > 1 && byte == 0){
 					/* Catch overlong encodings */
-					return MOSQ_ERR_PROTOCOL;
+					return MOSQ_ERR_MALFORMED_PACKET;
 				}else{
 					*word = lword;
 					if(bytes) (*bytes) = lbytes;
@@ -225,10 +227,10 @@ int packet__read_varint(struct mosquitto__packet *packet, uint32_t *word, uint8_
 				}
 			}
 		}else{
-			return MOSQ_ERR_PROTOCOL;
+			return MOSQ_ERR_MALFORMED_PACKET;
 		}
 	}
-	return MOSQ_ERR_PROTOCOL;
+	return MOSQ_ERR_MALFORMED_PACKET;
 }
 
 
@@ -249,7 +251,7 @@ int packet__write_varint(struct mosquitto__packet *packet, uint32_t word)
 	}while(word > 0 && count < 5);
 
 	if(count == 5){
-		return MOSQ_ERR_PROTOCOL;
+		return MOSQ_ERR_MALFORMED_PACKET;
 	}
 	return MOSQ_ERR_SUCCESS;
 }

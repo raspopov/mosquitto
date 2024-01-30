@@ -4,12 +4,14 @@ Copyright (c) 2010-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -17,6 +19,7 @@ Contributors:
 #define NET_MOSQ_H
 
 #ifndef WIN32
+#  include <sys/socket.h>
 #  include <unistd.h>
 #else
 #  include <winsock2.h>
@@ -34,6 +37,9 @@ typedef SSIZE_T ssize_t;
 #  define COMPAT_ECONNRESET WSAECONNRESET
 #  define COMPAT_EINTR WSAEINTR
 #  define COMPAT_EWOULDBLOCK WSAEWOULDBLOCK
+#  ifndef EINPROGRESS
+#    define EINPROGRESS WSAEINPROGRESS
+#  endif
 #else
 #  define COMPAT_CLOSE(a) close(a)
 #  define COMPAT_ECONNRESET ECONNRESET
@@ -44,6 +50,10 @@ typedef SSIZE_T ssize_t;
 /* For when not using winsock libraries. */
 #ifndef INVALID_SOCKET
 #define INVALID_SOCKET -1
+#endif
+
+#ifndef MSG_NOSIGNAL
+#  define MSG_NOSIGNAL 0
 #endif
 
 /* Macros for accessing the MSB and LSB of a uint16_t */
@@ -67,7 +77,7 @@ int net__socket_nonblock(mosq_sock_t *sock);
 int net__socketpair(mosq_sock_t *sp1, mosq_sock_t *sp2);
 
 ssize_t net__read(struct mosquitto *mosq, void *buf, size_t count);
-ssize_t net__write(struct mosquitto *mosq, void *buf, size_t count);
+ssize_t net__write(struct mosquitto *mosq, const void *buf, size_t count);
 
 #ifdef WITH_TLS
 void net__print_ssl_error(struct mosquitto *mosq);

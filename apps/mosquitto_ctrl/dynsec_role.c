@@ -10,13 +10,21 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
-#include <cJSON.h>
+#include "config.h"
+
+#include <cjson/cJSON.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef WIN32
+#  include <strings.h>
+#endif
 
 #include "mosquitto.h"
 #include "mosquitto_ctrl.h"

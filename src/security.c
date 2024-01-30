@@ -4,12 +4,14 @@ Copyright (c) 2011-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -45,7 +47,7 @@ void LIB_ERROR(void)
 }
 
 
-int security__load_v2(struct mosquitto__auth_plugin *plugin, struct mosquitto_auth_opt *auth_options, int auth_option_count, void *lib)
+static int security__load_v2(struct mosquitto__auth_plugin *plugin, struct mosquitto_auth_opt *auth_options, int auth_option_count, void *lib)
 {
 	int rc;
 
@@ -119,7 +121,7 @@ int security__load_v2(struct mosquitto__auth_plugin *plugin, struct mosquitto_au
 }
 
 
-int security__load_v3(struct mosquitto__auth_plugin *plugin, struct mosquitto_opt *auth_options, int auth_option_count, void *lib)
+static int security__load_v3(struct mosquitto__auth_plugin *plugin, struct mosquitto_opt *auth_options, int auth_option_count, void *lib)
 {
 	int rc;
 
@@ -192,7 +194,7 @@ int security__load_v3(struct mosquitto__auth_plugin *plugin, struct mosquitto_op
 }
 
 
-int security__load_v4(struct mosquitto__auth_plugin *plugin, struct mosquitto_opt *auth_options, int auth_option_count, void *lib)
+static int security__load_v4(struct mosquitto__auth_plugin *plugin, struct mosquitto_opt *auth_options, int auth_option_count, void *lib)
 {
 	int rc;
 
@@ -255,7 +257,7 @@ int security__load_v4(struct mosquitto__auth_plugin *plugin, struct mosquitto_op
 
 	plugin->auth_start_v4 = (FUNC_auth_plugin_auth_start_v4)LIB_SYM(lib, "mosquitto_auth_start");
 	plugin->auth_continue_v4 = (FUNC_auth_plugin_auth_continue_v4)LIB_SYM(lib, "mosquitto_auth_continue");
-	
+
 	if(plugin->auth_start_v4){
 		if(plugin->auth_continue_v4){
 			log__printf(NULL, MOSQ_LOG_INFO,
@@ -693,7 +695,7 @@ int mosquitto_acl_check(struct mosquitto *context, const char *topic, uint32_t p
 	rc = acl__check_dollar(topic, access);
 	if(rc) return rc;
 
-	/* 
+	/*
 	 * If no plugins exist we should accept at this point so set rc to success.
 	 */
 	rc = MOSQ_ERR_SUCCESS;
@@ -762,6 +764,9 @@ int mosquitto_unpwd_check(struct mosquitto *context)
 	rc = MOSQ_ERR_PLUGIN_DEFER;
 
 	if(db.config->per_listener_settings){
+		if(context->listener == NULL){
+			return MOSQ_ERR_AUTH;
+		}
 		opts = &context->listener->security_options;
 	}else{
 		opts = &db.config->security_options;
@@ -780,7 +785,7 @@ int mosquitto_unpwd_check(struct mosquitto *context)
 	}
 
 	for(i=0; i<opts->auth_plugin_config_count; i++){
-		if(opts->auth_plugin_configs[i].plugin.version == 4 
+		if(opts->auth_plugin_configs[i].plugin.version == 4
 				&& opts->auth_plugin_configs[i].plugin.unpwd_check_v4){
 
 			rc = opts->auth_plugin_configs[i].plugin.unpwd_check_v4(
@@ -822,7 +827,7 @@ int mosquitto_unpwd_check(struct mosquitto *context)
 			if(context->username == NULL &&
 					((db.config->per_listener_settings && context->listener->security_options.allow_anonymous != false)
 					|| (!db.config->per_listener_settings && db.config->security_options.allow_anonymous != false))){
-	
+
 				return MOSQ_ERR_SUCCESS;
 			}else{
 				return MOSQ_ERR_AUTH;
@@ -934,6 +939,7 @@ int mosquitto_security_auth_start(struct mosquitto *context, bool reauth, const 
 	DL_FOREACH(opts->plugin_callbacks.ext_auth_start, cb_base){
 		memset(&event_data, 0, sizeof(event_data));
 		event_data.client = context;
+		event_data.auth_method = context->auth_method;
 		event_data.data_in = data_in;
 		event_data.data_out = NULL;
 		event_data.data_in_len = data_in_len;

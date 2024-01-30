@@ -3,7 +3,7 @@ include ../../config.mk
 .PHONY : all binary check clean reallyclean test install uninstall
 
 PLUGIN_NAME=mosquitto_dynamic_security
-LOCAL_CPPFLAGS=-I/usr/include/cjson -I/usr/local/include/cjson -I../../src/
+LOCAL_CPPFLAGS=-I../../src/ -DWITH_CJSON
 
 OBJS=	\
 		acl.o \
@@ -74,9 +74,13 @@ clean:
 check: test
 test:
 
-install: ${PLUGIN_NAME}.so
-	$(INSTALL) -d "${DESTDIR}$(prefix)/lib"
-	$(INSTALL) ${STRIP_OPTS} ${PLUGIN_NAME}.so "${DESTDIR}${prefix}/lib/${PLUGIN_NAME}.so"
+install: all
+ifeq ($(WITH_CJSON),yes)
+ifeq ($(WITH_TLS),yes)
+	$(INSTALL) -d "${DESTDIR}$(libdir)"
+	$(INSTALL) ${STRIP_OPTS} ${PLUGIN_NAME}.so "${DESTDIR}${libdir}/${PLUGIN_NAME}.so"
+endif
+endif
 
 uninstall :
-	-rm -f "${DESTDIR}${prefix}/lib/${PLUGIN_NAME}.so"
+	-rm -f "${DESTDIR}${libdir}/${PLUGIN_NAME}.so"

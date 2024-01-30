@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -30,10 +32,11 @@ Contributors:
 #include "mqtt_protocol.h"
 #include "packet_mosq.h"
 #include "property_mosq.h"
+#include "send_mosq.h"
 #include "util_mosq.h"
 
 
-int send__subscribe(struct mosquitto *mosq, int *mid, int topic_count, const char **topic, int topic_qos, const mosquitto_property *properties)
+int send__subscribe(struct mosquitto *mosq, int *mid, int topic_count, char *const *const topic, int topic_qos, const mosquitto_property *properties)
 {
 	struct mosquitto__packet *packet = NULL;
 	uint32_t packetlen;
@@ -86,11 +89,11 @@ int send__subscribe(struct mosquitto *mosq, int *mid, int topic_count, const cha
 
 #ifdef WITH_BROKER
 # ifdef WITH_BRIDGE
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Bridge %s sending SUBSCRIBE (Mid: %d, Topic: %s, QoS: %d, Options: 0x%02x)", mosq->id, local_mid, topic[0], topic_qos&0x03, topic_qos&0xFC);
+	log__printf(mosq, MOSQ_LOG_DEBUG, "Bridge %s sending SUBSCRIBE (Mid: %d, Topic: %s, QoS: %d, Options: 0x%02x)", SAFE_PRINT(mosq->id), local_mid, topic[0], topic_qos&0x03, topic_qos&0xFC);
 # endif
 #else
 	for(i=0; i<topic_count; i++){
-		log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending SUBSCRIBE (Mid: %d, Topic: %s, QoS: %d, Options: 0x%02x)", mosq->id, local_mid, topic[i], topic_qos&0x03, topic_qos&0xFC);
+		log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending SUBSCRIBE (Mid: %d, Topic: %s, QoS: %d, Options: 0x%02x)", SAFE_PRINT(mosq->id), local_mid, topic[i], topic_qos&0x03, topic_qos&0xFC);
 	}
 #endif
 

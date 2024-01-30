@@ -4,12 +4,14 @@ Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -19,6 +21,8 @@ Contributors:
 #ifdef WIN32
    /* For rand_s on Windows */
 #  define _CRT_RAND_S
+#  include <fcntl.h>
+#  include <io.h>
 #endif
 
 #include <assert.h>
@@ -36,7 +40,7 @@ Contributors:
 #endif
 
 #ifdef WITH_CJSON
-#  include <cJSON.h>
+#  include <cjson/cJSON.h>
 #endif
 
 #ifdef __APPLE__
@@ -93,6 +97,8 @@ static void write_payload(const unsigned char *payload, int payloadlen, int hex,
 {
 	int i;
 	int padlen;
+
+	UNUSED(precision); /* FIXME - use or remove */
 
 	if(field_width > 0){
 		if(payloadlen > field_width){
@@ -204,7 +210,7 @@ static int json_print_properties(cJSON *root, const mosquitto_property *properti
 				break;
 
 			case MQTT_PROP_TOPIC_ALIAS:
-				mosquitto_property_read_int16(prop, MQTT_PROP_MESSAGE_EXPIRY_INTERVAL, &i16value, false);
+				mosquitto_property_read_int16(prop, MQTT_PROP_TOPIC_ALIAS, &i16value, false);
 				tmp = cJSON_CreateNumber(i16value);
 				break;
 
@@ -242,6 +248,16 @@ static int json_print_properties(cJSON *root, const mosquitto_property *properti
 #endif
 
 
+static void format_time_8601(const struct tm *ti, int ns, char *buf, size_t len)
+{
+	char c;
+
+	strftime(buf, len, "%Y-%m-%dT%H:%M:%S.000000%z", ti);
+	c = buf[strlen("2020-05-06T21:48:00.000000")];
+	snprintf(&buf[strlen("2020-05-06T21:48:00.")], 9, "%06d", ns/1000);
+	buf[strlen("2020-05-06T21:48:00.000000")] = c;
+}
+
 static int json_print(const struct mosquitto_message *message, const mosquitto_property *properties, const struct tm *ti, int ns, bool escaped, bool pretty)
 {
 	char buf[100];
@@ -256,9 +272,7 @@ static int json_print(const struct mosquitto_message *message, const mosquitto_p
 		return MOSQ_ERR_NOMEM;
 	}
 
-	strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000000Z%z", ti);
-	snprintf(&buf[strlen("2020-05-06T21:48:00.")], 9, "%06d", ns/1000);
-	buf[strlen("2020-05-06T21:48:00.000000")] = 'Z';
+	format_time_8601(ti, ns, buf, sizeof(buf));
 
 	tmp = cJSON_CreateStringReference(buf);
 	if(tmp == NULL){
@@ -329,7 +343,7 @@ static int json_print(const struct mosquitto_message *message, const mosquitto_p
 		return_parse_end = NULL;
 		if(message->payload){
 			tmp = cJSON_ParseWithOpts(message->payload, &return_parse_end, true);
-			if(tmp == NULL || return_parse_end != message->payload + message->payloadlen){
+			if(tmp == NULL || return_parse_end != (char *)message->payload + message->payloadlen){
 				cJSON_Delete(root);
 				return MOSQ_ERR_INVAL;
 			}
@@ -349,15 +363,19 @@ static int json_print(const struct mosquitto_message *message, const mosquitto_p
 		json_str = cJSON_PrintUnformatted(root);
 	}
 	cJSON_Delete(root);
+	if(json_str == NULL){
+		return MOSQ_ERR_NOMEM;
+	}
 
 	fputs(json_str, stdout);
 	free(json_str);
-	
+
 	return MOSQ_ERR_SUCCESS;
 #else
-	strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S.000000Z%z", ti);
-	snprintf(&buf[strlen("2020-05-06T21:48:00.")], 9, "%06d", ns/1000);
-	buf[strlen("2020-05-06T21:48:00.000000")] = 'Z';
+	UNUSED(properties);
+	UNUSED(pretty);
+
+	format_time_8601(ti, ns, buf, sizeof(buf));
 
 	printf("{\"tst\":\"%s\",\"topic\":\"%s\",\"qos\":%d,\"retain\":%d,\"payloadlen\":%d,", buf, message->topic, message->qos, message->retain, message->payloadlen);
 	if(message->qos > 0){
@@ -372,7 +390,7 @@ static int json_print(const struct mosquitto_message *message, const mosquitto_p
 		write_payload(message->payload, message->payloadlen, 0, 0, 0, 0, 0);
 		fputs("}", stdout);
 	}
-	
+
 	return MOSQ_ERR_SUCCESS;
 #endif
 }
@@ -435,13 +453,13 @@ static void formatted_print_str(const char *value, char align, int field_width, 
 static void formatted_print_percent(const struct mosq_config *lcfg, const struct mosquitto_message *message, const mosquitto_property *properties, char format, char align, char pad, int field_width, int precision)
 {
 	struct tm *ti = NULL;
-	long ns;
+	long ns = 0;
 	char buf[100];
 	int rc;
 	uint8_t i8value;
 	uint16_t i16value;
 	uint32_t i32value;
-	char *binvalue, *strname, *strvalue;
+	char *binvalue = NULL, *strname, *strvalue;
 	const mosquitto_property *prop;
 
 
@@ -623,10 +641,10 @@ static void formatted_print_percent(const struct mosq_config *lcfg, const struct
 static void formatted_print(const struct mosq_config *lcfg, const struct mosquitto_message *message, const mosquitto_property *properties)
 {
 	size_t len;
-	int i;
+	size_t i;
 	struct tm *ti = NULL;
-	long ns;
-	char strf[3];
+	long ns = 0;
+	char strf[3] = {0, 0 ,0};
 	char buf[100];
 	char align, pad;
 	int field_width, precision;
@@ -754,7 +772,7 @@ static void formatted_print(const struct mosq_config *lcfg, const struct mosquit
 }
 
 
-void rand_init(void)
+void output_init(void)
 {
 #ifndef WIN32
 	struct tm *ti = NULL;
@@ -763,11 +781,14 @@ void rand_init(void)
 	if(!get_time(&ti, &ns)){
 		srandom((unsigned int)ns);
 	}
+#else
+	/* Disable text translation so binary payloads aren't modified */
+	_setmode(_fileno(stdout), _O_BINARY);
 #endif
 }
 
 
-void print_message(struct mosq_config *cfg, const struct mosquitto_message *message, const mosquitto_property *properties)
+void print_message(struct mosq_config *lcfg, const struct mosquitto_message *message, const mosquitto_property *properties)
 {
 #ifdef WIN32
 	unsigned int r = 0;
@@ -775,27 +796,27 @@ void print_message(struct mosq_config *cfg, const struct mosquitto_message *mess
 	long r = 0;
 #endif
 
-	if(cfg->random_filter < 10000){
+	if(lcfg->random_filter < 10000){
 #ifdef WIN32
 		rand_s(&r);
 #else
 		r = random();
 #endif
-		if((r%10000) >= cfg->random_filter){
+		if((long)(r%10000) >= lcfg->random_filter){
 			return;
 		}
 	}
-	if(cfg->format){
-		formatted_print(cfg, message, properties);
-	}else if(cfg->verbose){
+	if(lcfg->format){
+		formatted_print(lcfg, message, properties);
+	}else if(lcfg->verbose){
 		if(message->payloadlen){
 			printf("%s ", message->topic);
 			write_payload(message->payload, message->payloadlen, false, 0, 0, 0, 0);
-			if(cfg->eol){
+			if(lcfg->eol){
 				printf("\n");
 			}
 		}else{
-			if(cfg->eol){
+			if(lcfg->eol){
 				printf("%s (null)\n", message->topic);
 			}
 		}
@@ -803,7 +824,7 @@ void print_message(struct mosq_config *cfg, const struct mosquitto_message *mess
 	}else{
 		if(message->payloadlen){
 			write_payload(message->payload, message->payloadlen, false, 0, 0, 0, 0);
-			if(cfg->eol){
+			if(lcfg->eol){
 				printf("\n");
 			}
 			fflush(stdout);

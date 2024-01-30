@@ -4,12 +4,14 @@ Copyright (c) 2010-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -74,6 +76,7 @@ static int mosquitto__connect_init(struct mosquitto *mosq, const char *host, int
 	mosq->msgs_in.inflight_quota = mosq->msgs_in.inflight_maximum;
 	mosq->msgs_out.inflight_quota = mosq->msgs_out.inflight_maximum;
 	mosq->retain_available = 1;
+	mosquitto__set_request_disconnect(mosq, false);
 
 	return MOSQ_ERR_SUCCESS;
 }
@@ -94,8 +97,10 @@ int mosquitto_connect_bind_v5(struct mosquitto *mosq, const char *host, int port
 {
 	int rc;
 
-	rc = mosquitto_string_option(mosq, MOSQ_OPT_BIND_ADDRESS, bind_address);
-	if(rc) return rc;
+	if(bind_address){
+		rc = mosquitto_string_option(mosq, MOSQ_OPT_BIND_ADDRESS, bind_address);
+		if(rc) return rc;
+	}
 
 	mosquitto_property_free_all(&mosq->connect_properties);
 	if(properties){
@@ -126,8 +131,10 @@ int mosquitto_connect_bind_async(struct mosquitto *mosq, const char *host, int p
 {
 	int rc;
 
-	rc = mosquitto_string_option(mosq, MOSQ_OPT_BIND_ADDRESS, bind_address);
-	if(rc) return rc;
+	if(bind_address){
+		rc = mosquitto_string_option(mosq, MOSQ_OPT_BIND_ADDRESS, bind_address);
+		if(rc) return rc;
+	}
 
 	rc = mosquitto__connect_init(mosq, host, port, keepalive);
 	if(rc) return rc;
@@ -183,10 +190,10 @@ static int mosquitto__reconnect(struct mosquitto *mosq, bool blocking)
 
 	packet__cleanup_all(mosq);
 
-	message__reconnect_reset(mosq);
+	message__reconnect_reset(mosq, false);
 
 	if(mosq->sock != INVALID_SOCKET){
-        net__socket_close(mosq); //close socket
+        net__socket_close(mosq);
     }
 
 #ifdef WITH_SOCKS
@@ -249,6 +256,7 @@ int mosquitto_disconnect_v5(struct mosquitto *mosq, int reason_code, const mosqu
 	}
 
 	mosquitto__set_state(mosq, mosq_cs_disconnected);
+	mosquitto__set_request_disconnect(mosq, true);
 	if(mosq->sock == INVALID_SOCKET){
 		return MOSQ_ERR_NO_CONN;
 	}else{
@@ -270,6 +278,7 @@ void do_client_disconnect(struct mosquitto *mosq, int reason_code, const mosquit
 		if(!mosq->out_packet){
 			mosq->out_packet_last = NULL;
 		}
+		mosq->out_packet_count--;
 	}
 	pthread_mutex_unlock(&mosq->out_packet_mutex);
 

@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
    Tatsuzo Osawa - Add epoll.
@@ -52,6 +54,7 @@ Contributors:
 
 #include "mosquitto_broker_internal.h"
 #include "memory_mosq.h"
+#include "mux.h"
 #include "packet_mosq.h"
 #include "send_mosq.h"
 #include "sys_tree.h"
@@ -103,18 +106,12 @@ int mux_epoll__init(struct mosquitto__listener_sock *listensock, int listensock_
 	return MOSQ_ERR_SUCCESS;
 }
 
-int mux_epoll__loop_setup(void)
-{
-	return MOSQ_ERR_SUCCESS;
-}
-
-
 int mux_epoll__add_out(struct mosquitto *context)
 {
 	struct epoll_event ev;
 
-	memset(&ev, 0, sizeof(struct epoll_event));
 	if(!(context->events & EPOLLOUT)) {
+		memset(&ev, 0, sizeof(struct epoll_event));
 		ev.data.ptr = context;
 		ev.events = EPOLLIN | EPOLLOUT;
 		if(epoll_ctl(db.epollfd, EPOLL_CTL_ADD, context->sock, &ev) == -1) {
@@ -132,8 +129,8 @@ int mux_epoll__remove_out(struct mosquitto *context)
 {
 	struct epoll_event ev;
 
-	memset(&ev, 0, sizeof(struct epoll_event));
 	if(context->events & EPOLLOUT) {
+		memset(&ev, 0, sizeof(struct epoll_event));
 		ev.data.ptr = context;
 		ev.events = EPOLLIN;
 		if(epoll_ctl(db.epollfd, EPOLL_CTL_ADD, context->sock, &ev) == -1) {
@@ -155,7 +152,9 @@ int mux_epoll__add_in(struct mosquitto *context)
 	ev.events = EPOLLIN;
 	ev.data.ptr = context;
 	if (epoll_ctl(db.epollfd, EPOLL_CTL_ADD, context->sock, &ev) == -1) {
-		log__printf(NULL, MOSQ_LOG_ERR, "Error in epoll accepting: %s", strerror(errno));
+		if(errno != EEXIST){
+			log__printf(NULL, MOSQ_LOG_ERR, "Error in epoll accepting: %s", strerror(errno));
+		}
 	}
 	context->events = EPOLLIN;
 	return MOSQ_ERR_SUCCESS;
@@ -215,6 +214,11 @@ int mux_epoll__handle(void)
 						mux__add_in(context);
 					}
 				}
+#ifdef WITH_WEBSOCKETS
+			}else if(context->ident == id_listener_ws){
+				/* Nothing needs to happen here, because we always call lws_service in the loop.
+				 * The important point is we've been woken up for this listener. */
+#endif
 			}
 		}
 	}
@@ -246,11 +250,7 @@ static void loop_handle_reads_writes(struct mosquitto *context, uint32_t events)
 		wspoll.fd = context->sock;
 		wspoll.events = (int16_t)context->events;
 		wspoll.revents = (int16_t)events;
-#ifdef LWS_LIBRARY_VERSION_NUMBER
 		lws_service_fd(lws_get_context(context->wsi), &wspoll);
-#else
-		lws_service_fd(context->ws_context, &wspoll);
-#endif
 		return;
 	}
 #endif

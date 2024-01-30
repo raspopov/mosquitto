@@ -4,12 +4,14 @@ Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -48,20 +50,18 @@ enum rr__state {
 
 static enum rr__state client_state = rr_s_new;
 
-extern struct mosq_config cfg;
-
 bool process_messages = true;
 int msg_count = 0;
-struct mosquitto *mosq = NULL;
+struct mosquitto *g_mosq = NULL;
 static bool timed_out = false;
 static int connack_result = 0;
 
 #ifndef WIN32
-void my_signal_handler(int signum)
+static void my_signal_handler(int signum)
 {
 	if(signum == SIGALRM){
 		process_messages = false;
-		mosquitto_disconnect_v5(mosq, MQTT_RC_DISCONNECT_WITH_WILL_MSG, cfg.disconnect_props);
+		mosquitto_disconnect_v5(g_mosq, MQTT_RC_DISCONNECT_WITH_WILL_MSG, cfg.disconnect_props);
 		timed_out = true;
 	}
 }
@@ -78,9 +78,17 @@ int my_publish(struct mosquitto *mosq, int *mid, const char *topic, int payloadl
 }
 
 
-void my_message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message, const mosquitto_property *properties)
+static void my_message_callback(struct mosquitto *mosq, void *obj, const struct mosquitto_message *message, const mosquitto_property *properties)
 {
+	UNUSED(mosq);
+	UNUSED(obj);
+	UNUSED(properties);
+
+	if(process_messages == false) return;
+	if(message->retain && cfg.no_retain) return;
+
 	print_message(&cfg, message, properties);
+
 	switch(cfg.pub_mode){
 		case MSGMODE_CMD:
 		case MSGMODE_FILE:
@@ -92,37 +100,14 @@ void my_message_callback(struct mosquitto *mosq, void *obj, const struct mosquit
 			client_state = rr_s_ready_to_publish;
 			break;
 	}
-	/* FIXME - check all below
-	if(process_messages == false) return;
-
-	if(cfg.retained_only && !message->retain && process_messages){
-		process_messages = false;
-		mosquitto_disconnect_v5(mosq, 0, cfg.disconnect_props);
-		return;
-	}
-
-	if(message->retain && cfg.no_retain) return;
-	if(cfg.filter_outs){
-		for(i=0; i<cfg.filter_out_count; i++){
-			mosquitto_topic_matches_sub(cfg.filter_outs[i], message->topic, &res);
-			if(res) return;
-		}
-	}
-
-	//print_message(&cfg, message);
-
-	if(cfg.msg_count>0){
-		msg_count++;
-		if(cfg.msg_count == msg_count){
-			process_messages = false;
-			mosquitto_disconnect_v5(mosq, 0, cfg.disconnect_props);
-		}
-	}
-	*/
 }
 
 void my_connect_callback(struct mosquitto *mosq, void *obj, int result, int flags, const mosquitto_property *properties)
 {
+	UNUSED(obj);
+	UNUSED(flags);
+	UNUSED(properties);
+
 	connack_result = result;
 	if(!result){
 		client_state = rr_s_connected;
@@ -141,8 +126,12 @@ void my_connect_callback(struct mosquitto *mosq, void *obj, int result, int flag
 }
 
 
-void my_subscribe_callback(struct mosquitto *mosq, void *obj, int mid, int qos_count, const int *granted_qos)
+static void my_subscribe_callback(struct mosquitto *mosq, void *obj, int mid, int qos_count, const int *granted_qos)
 {
+	UNUSED(obj);
+	UNUSED(mid);
+	UNUSED(qos_count);
+
 	if(granted_qos[0] < 128){
 		client_state = rr_s_ready_to_publish;
 	}else{
@@ -155,11 +144,17 @@ void my_subscribe_callback(struct mosquitto *mosq, void *obj, int mid, int qos_c
 
 void my_publish_callback(struct mosquitto *mosq, void *obj, int mid, int reason_code, const mosquitto_property *properties)
 {
+	UNUSED(mosq);
+	UNUSED(obj);
+	UNUSED(mid);
+	UNUSED(reason_code);
+	UNUSED(properties);
+
 	client_state = rr_s_wait_for_response;
 }
 
 
-void print_version(void)
+static void print_version(void)
 {
 	int major, minor, revision;
 
@@ -167,7 +162,7 @@ void print_version(void)
 	printf("mosquitto_rr version %s running on libmosquitto %d.%d.%d.\n", VERSION, major, minor, revision);
 }
 
-void print_usage(void)
+static void print_usage(void)
 {
 	int major, minor, revision;
 
@@ -195,6 +190,7 @@ void print_usage(void)
 	printf("                      [--ciphers ciphers] [--insecure]\n");
 	printf("                      [--tls-alpn protocol]\n");
 	printf("                      [--tls-engine engine] [--keyform keyform] [--tls-engine-kpass-sha1]]\n");
+	printf("                      [--tls-use-os-certs]\n");
 #ifdef FINAL_WITH_TLS_PSK
 	printf("                     [--psk hex-key --psk-identity identity [--ciphers ciphers]]\n");
 #endif
@@ -262,7 +258,8 @@ void print_usage(void)
 	printf(" --cert : client certificate for authentication, if required by server.\n");
 	printf(" --key : client private key for authentication, if required by server.\n");
 	printf(" --ciphers : openssl compatible list of TLS ciphers to support.\n");
-	printf(" --tls-version : TLS protocol version, can be one of tlsv1.2 tlsv1.1 or tlsv1.\n");
+	printf(" --tls-use-os-certs : Load and trust OS provided CA certificates.\n");
+	printf(" --tls-version : TLS protocol version, can be one of tlsv1.3 tlsv1.2 or tlsv1.1.\n");
 	printf("                 Defaults to tlsv1.2 if available.\n");
 	printf(" --insecure : do not check that the server certificate hostname matches the remote\n");
 	printf("              hostname. Using this option means that you cannot be sure that the\n");
@@ -289,6 +286,7 @@ int main(int argc, char *argv[])
 #endif
 
 	mosquitto_lib_init();
+	output_init();
 
 	rc = client_config_load(&cfg, CLIENT_RR, argc, argv);
 	if(rc){
@@ -324,8 +322,8 @@ int main(int argc, char *argv[])
 		goto cleanup;
 	}
 
-	mosq = mosquitto_new(cfg.id, cfg.clean_session, &cfg);
-	if(!mosq){
+	g_mosq = mosquitto_new(cfg.id, cfg.clean_session, &cfg);
+	if(!g_mosq){
 		switch(errno){
 			case ENOMEM:
 				err_printf(&cfg, "Error: Out of memory.\n");
@@ -336,17 +334,17 @@ int main(int argc, char *argv[])
 		}
 		goto cleanup;
 	}
-	if(client_opts_set(mosq, &cfg)){
+	if(client_opts_set(g_mosq, &cfg)){
 		goto cleanup;
 	}
 	if(cfg.debug){
-		mosquitto_log_callback_set(mosq, my_log_callback);
+		mosquitto_log_callback_set(g_mosq, my_log_callback);
 	}
-	mosquitto_connect_v5_callback_set(mosq, my_connect_callback);
-	mosquitto_subscribe_callback_set(mosq, my_subscribe_callback);
-	mosquitto_message_v5_callback_set(mosq, my_message_callback);
+	mosquitto_connect_v5_callback_set(g_mosq, my_connect_callback);
+	mosquitto_subscribe_callback_set(g_mosq, my_subscribe_callback);
+	mosquitto_message_v5_callback_set(g_mosq, my_message_callback);
 
-	rc = client_connect(mosq, &cfg);
+	rc = client_connect(g_mosq, &cfg);
 	if(rc){
 		goto cleanup;
 	}
@@ -367,17 +365,17 @@ int main(int argc, char *argv[])
 #endif
 
 	do{
-		rc = mosquitto_loop(mosq, -1, 1);
+		rc = mosquitto_loop(g_mosq, -1, 1);
 		if(client_state == rr_s_ready_to_publish){
 			client_state = rr_s_wait_for_response;
 			switch(cfg.pub_mode){
 				case MSGMODE_CMD:
 				case MSGMODE_FILE:
 				case MSGMODE_STDIN_FILE:
-					rc = my_publish(mosq, &mid_sent, cfg.topic, cfg.msglen, cfg.message, cfg.qos, cfg.retain);
+					rc = my_publish(g_mosq, &mid_sent, cfg.topic, cfg.msglen, cfg.message, cfg.qos, cfg.retain);
 					break;
 				case MSGMODE_NULL:
-					rc = my_publish(mosq, &mid_sent, cfg.topic, 0, NULL, cfg.qos, cfg.retain);
+					rc = my_publish(g_mosq, &mid_sent, cfg.topic, 0, NULL, cfg.qos, cfg.retain);
 					break;
 				case MSGMODE_STDIN_LINE:
 					/* FIXME */
@@ -386,7 +384,7 @@ int main(int argc, char *argv[])
 		}
 	}while(rc == MOSQ_ERR_SUCCESS && client_state != rr_s_disconnect);
 
-	mosquitto_destroy(mosq);
+	mosquitto_destroy(g_mosq);
 	mosquitto_lib_cleanup();
 
 	if(cfg.msg_count>0 && rc == MOSQ_ERR_NO_CONN){

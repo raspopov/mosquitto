@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -49,6 +51,9 @@ int handle__subscribe(struct mosquitto *context)
 
 	if(context->state != mosq_cs_active){
 		return MOSQ_ERR_PROTOCOL;
+	}
+	if(context->in_packet.command != (CMD_SUBSCRIBE|2)){
+		return MOSQ_ERR_MALFORMED_PACKET;
 	}
 
 	log__printf(NULL, MOSQ_LOG_DEBUG, "Received SUBSCRIBE from %s", context->id);
@@ -141,6 +146,9 @@ int handle__subscribe(struct mosquitto *context)
 				mosquitto__free(sub);
 				mosquitto__free(payload);
 				return MOSQ_ERR_MALFORMED_PACKET;
+			}
+			if(qos > context->max_qos){
+				qos = context->max_qos;
 			}
 
 

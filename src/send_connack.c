@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -60,6 +62,13 @@ int send__connack(struct mosquitto *context, uint8_t ack, uint8_t reason_code, c
 		}
 		if(reason_code < 128 && db.config->max_inflight_messages > 0){
 			rc = mosquitto_property_add_int16(&connack_props, MQTT_PROP_RECEIVE_MAXIMUM, db.config->max_inflight_messages);
+			if(rc){
+				mosquitto_property_free_all(&connack_props);
+				return rc;
+			}
+		}
+		if(context->listener->max_qos != 2){
+			rc = mosquitto_property_add_byte(&connack_props, MQTT_PROP_MAXIMUM_QOS, context->listener->max_qos);
 			if(rc){
 				mosquitto_property_free_all(&connack_props);
 				return rc;

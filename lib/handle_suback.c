@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -29,6 +31,7 @@ Contributors:
 #include "mqtt_protocol.h"
 #include "packet_mosq.h"
 #include "property_mosq.h"
+#include "read_handle.h"
 #include "util_mosq.h"
 
 
@@ -41,19 +44,24 @@ int handle__suback(struct mosquitto *mosq)
 	int i = 0;
 	int rc;
 	mosquitto_property *properties = NULL;
-	int state;
 
 	assert(mosq);
 
-	state = mosquitto__get_state(mosq);
-	if(state != mosq_cs_active){
+	if(mosquitto__get_state(mosq) != mosq_cs_active){
 		return MOSQ_ERR_PROTOCOL;
+	}
+	if(mosq->in_packet.command != CMD_SUBACK){
+		return MOSQ_ERR_MALFORMED_PACKET;
 	}
 
 #ifdef WITH_BROKER
-	log__printf(NULL, MOSQ_LOG_DEBUG, "Received SUBACK from %s", mosq->id);
+	if(mosq->bridge == NULL){
+		/* Client is not a bridge, so shouldn't be sending SUBACK */
+		return MOSQ_ERR_PROTOCOL;
+	}
+	log__printf(NULL, MOSQ_LOG_DEBUG, "Received SUBACK from %s", SAFE_PRINT(mosq->id));
 #else
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s received SUBACK", mosq->id);
+	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s received SUBACK", SAFE_PRINT(mosq->id));
 #endif
 	rc = packet__read_uint16(&mosq->in_packet, &mid);
 	if(rc) return rc;

@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -37,39 +39,39 @@ Contributors:
 
 int handle__pingreq(struct mosquitto *mosq)
 {
-	int state;
-
 	assert(mosq);
 
-	state = mosquitto__get_state(mosq);
-	if(state != mosq_cs_active){
+	if(mosquitto__get_state(mosq) != mosq_cs_active){
 		return MOSQ_ERR_PROTOCOL;
+	}
+	if(mosq->in_packet.command != CMD_PINGREQ){
+		return MOSQ_ERR_MALFORMED_PACKET;
 	}
 
 #ifdef WITH_BROKER
-	log__printf(NULL, MOSQ_LOG_DEBUG, "Received PINGREQ from %s", mosq->id);
+	log__printf(NULL, MOSQ_LOG_DEBUG, "Received PINGREQ from %s", SAFE_PRINT(mosq->id));
 #else
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s received PINGREQ", mosq->id);
+	return MOSQ_ERR_PROTOCOL;
 #endif
 	return send__pingresp(mosq);
 }
 
 int handle__pingresp(struct mosquitto *mosq)
 {
-	int state;
-
 	assert(mosq);
 
-	state = mosquitto__get_state(mosq);
-	if(state != mosq_cs_active){
+	if(mosquitto__get_state(mosq) != mosq_cs_active){
 		return MOSQ_ERR_PROTOCOL;
 	}
 
 	mosq->ping_t = 0; /* No longer waiting for a PINGRESP. */
 #ifdef WITH_BROKER
-	log__printf(NULL, MOSQ_LOG_DEBUG, "Received PINGRESP from %s", mosq->id);
+	if(mosq->bridge == NULL){
+		return MOSQ_ERR_PROTOCOL;
+	}
+	log__printf(NULL, MOSQ_LOG_DEBUG, "Received PINGRESP from %s", SAFE_PRINT(mosq->id));
 #else
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s received PINGRESP", mosq->id);
+	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s received PINGRESP", SAFE_PRINT(mosq->id));
 #endif
 	return MOSQ_ERR_SUCCESS;
 }

@@ -5,10 +5,14 @@ include ../../config.mk
 ifeq ($(WITH_SHARED_LIBRARIES),yes)
 LIBMOSQ:=../../lib/libmosquitto.so.${SOVERSION}
 else
+ifeq ($(WITH_THREADING),yes)
+LIBMOSQ:=../../lib/libmosquitto.a -lpthread -lssl -lcrypto
+else
 LIBMOSQ:=../../lib/libmosquitto.a
 endif
+endif
 
-LOCAL_CPPFLAGS:=-I/usr/include/cjson -I/usr/local/include/cjson -I../mosquitto_passwd
+LOCAL_CPPFLAGS:=-I../mosquitto_passwd -DWITH_CJSON
 
 OBJS=	mosquitto_ctrl.o \
 		client.o \
@@ -19,6 +23,7 @@ OBJS=	mosquitto_ctrl.o \
 		get_password.o \
 		memory_mosq.o \
 		memory_public.o \
+		misc_mosq.o \
 		options.o \
 		password_mosq.o
 
@@ -26,22 +31,19 @@ EXAMPLE_OBJS= example.o
 
 ifeq ($(WITH_TLS),yes)
 ifeq ($(WITH_CJSON),yes)
-
-ifeq ($(WITH_SHARED_LIBRARIES),yes)
 TARGET:=mosquitto_ctrl mosquitto_ctrl_example.so
 else
-ifeq ($(WITH_STATIC_LIBRARIES),yes)
-TARGET:=mosquitto_ctrl mosquitto_ctrl_example.so
-endif
+TARGET:=
 endif
 
-endif
+else
+TARGET:=
 endif
 
-all : $(TARGET)
+all : ${TARGET}
 
-mosquitto_ctrl : ${OBJS}
-	${CROSS_COMPILE}${CC} ${APP_LDFLAGS} $^ -o $@ $(PASSWD_LDADD) $(LIBMOSQ) -lcjson -ldl
+mosquitto_ctrl : ${OBJS} ${LIBMOSQ}
+	${CROSS_COMPILE}${CC} ${APP_LDFLAGS} $^ -o $@ $(PASSWD_LDADD) $(LOCAL_LDFLAGS) $(LIBMOSQ) -lcjson -ldl
 
 mosquitto_ctrl_example.so : ${EXAMPLE_OBJS}
 	$(CROSS_COMPILE)$(CC) $(PLUGIN_CPPFLAGS) $(PLUGIN_CFLAGS) $(PLUGIN_LDFLAGS) -shared $< -o $@
@@ -85,9 +87,19 @@ misc_mosq.o : ../../lib/misc_mosq.c ../../lib/misc_mosq.h
 password_mosq.o : ../../src/password_mosq.c ../../src/password_mosq.h
 	${CROSS_COMPILE}${CC} $(APP_CPPFLAGS) $(APP_CFLAGS) -c $< -o $@
 
+../../lib/libmosquitto.so.${SOVERSION} :
+	$(MAKE) -C ../../lib
+
+../../lib/libmosquitto.a :
+	$(MAKE) -C ../../lib libmosquitto.a
+
 install : all
+ifeq ($(WITH_TLS),yes)
+ifeq ($(WITH_CJSON),yes)
 	$(INSTALL) -d "${DESTDIR}$(prefix)/bin"
 	$(INSTALL) ${STRIP_OPTS} mosquitto_ctrl "${DESTDIR}${prefix}/bin/mosquitto_ctrl"
+endif
+endif
 
 uninstall :
 	-rm -f "${DESTDIR}${prefix}/bin/mosquitto_ctrl"

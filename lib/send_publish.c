@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -63,6 +65,15 @@ int send__publish(struct mosquitto *mosq, uint16_t mid, const char *topic, uint3
 	}
 
 #ifdef WITH_BROKER
+	if(mosq->listener && mosq->listener->mount_point){
+		len = strlen(mosq->listener->mount_point);
+		if(len < strlen(topic)){
+			topic += len;
+		}else{
+			/* Invalid topic string. Should never happen, but silently swallow the message anyway. */
+			return MOSQ_ERR_SUCCESS;
+		}
+	}
 #ifdef WITH_BRIDGE
 	if(mosq->bridge && mosq->bridge->topics && mosq->bridge->topic_remapping){
 		for(i=0; i<mosq->bridge->topic_count; i++){
@@ -103,7 +114,7 @@ int send__publish(struct mosquitto *mosq, uint16_t mid, const char *topic, uint3
 						mosquitto__free(mapped_topic);
 						mapped_topic = topic_temp;
 					}
-					log__printf(NULL, MOSQ_LOG_DEBUG, "Sending PUBLISH to %s (d%d, q%d, r%d, m%d, '%s', ... (%ld bytes))", mosq->id, dup, qos, retain, mid, mapped_topic, (long)payloadlen);
+					log__printf(NULL, MOSQ_LOG_DEBUG, "Sending PUBLISH to %s (d%d, q%d, r%d, m%d, '%s', ... (%ld bytes))", SAFE_PRINT(mosq->id), dup, qos, retain, mid, mapped_topic, (long)payloadlen);
 					G_PUB_BYTES_SENT_INC(payloadlen);
 					rc =  send__real_publish(mosq, mid, mapped_topic, payloadlen, payload, qos, retain, dup, cmsg_props, store_props, expiry_interval);
 					mosquitto__free(mapped_topic);
@@ -113,10 +124,10 @@ int send__publish(struct mosquitto *mosq, uint16_t mid, const char *topic, uint3
 		}
 	}
 #endif
-	log__printf(NULL, MOSQ_LOG_DEBUG, "Sending PUBLISH to %s (d%d, q%d, r%d, m%d, '%s', ... (%ld bytes))", mosq->id, dup, qos, retain, mid, topic, (long)payloadlen);
+	log__printf(NULL, MOSQ_LOG_DEBUG, "Sending PUBLISH to %s (d%d, q%d, r%d, m%d, '%s', ... (%ld bytes))", SAFE_PRINT(mosq->id), dup, qos, retain, mid, topic, (long)payloadlen);
 	G_PUB_BYTES_SENT_INC(payloadlen);
 #else
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending PUBLISH (d%d, q%d, r%d, m%d, '%s', ... (%ld bytes))", mosq->id, dup, qos, retain, mid, topic, (long)payloadlen);
+	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending PUBLISH (d%d, q%d, r%d, m%d, '%s', ... (%ld bytes))", SAFE_PRINT(mosq->id), dup, qos, retain, mid, topic, (long)payloadlen);
 #endif
 
 	return send__real_publish(mosq, mid, topic, payloadlen, payload, qos, retain, dup, cmsg_props, store_props, expiry_interval);
@@ -164,9 +175,9 @@ int send__real_publish(struct mosquitto *mosq, uint16_t mid, const char *topic, 
 	}
 	if(packet__check_oversize(mosq, packetlen)){
 #ifdef WITH_BROKER
-		log__printf(NULL, MOSQ_LOG_NOTICE, "Dropping too large outgoing PUBLISH for %s (%d bytes)", mosq->id, packetlen);
+		log__printf(NULL, MOSQ_LOG_NOTICE, "Dropping too large outgoing PUBLISH for %s (%d bytes)", SAFE_PRINT(mosq->id), packetlen);
 #else
-		log__printf(NULL, MOSQ_LOG_NOTICE, "Dropping too large outgoing PUBLISH (%d bytes)", packetlen);
+		log__printf(mosq, MOSQ_LOG_NOTICE, "Dropping too large outgoing PUBLISH (%d bytes)", packetlen);
 #endif
 		return MOSQ_ERR_OVERSIZE_PACKET;
 	}

@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -87,12 +89,12 @@ int send__unsubscribe(struct mosquitto *mosq, int *mid, int topic_count, char *c
 #ifdef WITH_BROKER
 # ifdef WITH_BRIDGE
 	for(i=0; i<topic_count; i++){
-		log__printf(mosq, MOSQ_LOG_DEBUG, "Bridge %s sending UNSUBSCRIBE (Mid: %d, Topic: %s)", mosq->id, local_mid, topic[i]);
+		log__printf(mosq, MOSQ_LOG_DEBUG, "Bridge %s sending UNSUBSCRIBE (Mid: %d, Topic: %s)", SAFE_PRINT(mosq->id), local_mid, topic[i]);
 	}
 # endif
 #else
 	for(i=0; i<topic_count; i++){
-		log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending UNSUBSCRIBE (Mid: %d, Topic: %s)", mosq->id, local_mid, topic[i]);
+		log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending UNSUBSCRIBE (Mid: %d, Topic: %s)", SAFE_PRINT(mosq->id), local_mid, topic[i]);
 	}
 #endif
 	return packet__queue(mosq, packet);

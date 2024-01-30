@@ -4,12 +4,14 @@ Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -60,8 +62,8 @@ void bridge__start_all(void)
 	int i;
 
 	for(i=0; i<db.config->bridge_count; i++){
-		if(bridge__new(&(db.config->bridges[i]))){
-			log__printf(NULL, MOSQ_LOG_WARNING, "Warning: Unable to connect to bridge %s.", 
+		if(bridge__new(&(db.config->bridges[i])) > 0){
+			log__printf(NULL, MOSQ_LOG_WARNING, "Warning: Unable to connect to bridge %s.",
 					db.config->bridges[i].name);
 		}
 	}
@@ -84,13 +86,13 @@ int bridge__new(struct mosquitto__bridge *bridge)
 		mosquitto__free(local_id);
 	}else{
 		/* id wasn't found, so generate a new context */
-		new_context = context__init(-1);
+		new_context = context__init(INVALID_SOCKET);
 		if(!new_context){
 			mosquitto__free(local_id);
 			return MOSQ_ERR_NOMEM;
 		}
 		new_context->id = local_id;
-		HASH_ADD_KEYPTR(hh_id, db.contexts_by_id, new_context->id, strlen(new_context->id), new_context);
+		context__add_to_by_id(new_context);
 	}
 	new_context->bridge = bridge;
 	new_context->is_bridge = true;
@@ -110,6 +112,7 @@ int bridge__new(struct mosquitto__bridge *bridge)
 	new_context->tls_alpn = new_context->bridge->tls_alpn;
 	new_context->tls_engine = db.config->default_listener.tls_engine;
 	new_context->tls_keyform = db.config->default_listener.tls_keyform;
+	new_context->ssl_ctx_defaults = true;
 #ifdef FINAL_WITH_TLS_PSK
 	new_context->tls_psk_identity = new_context->bridge->tls_psk_identity;
 	new_context->tls_psk = new_context->bridge->tls_psk;
@@ -123,6 +126,9 @@ int bridge__new(struct mosquitto__bridge *bridge)
 	}
 	new_context->retain_available = bridge->outgoing_retain;
 	new_context->protocol = bridge->protocol_version;
+	if(!bridge->clean_start_local){
+		new_context->session_expiry_interval = UINT32_MAX;
+	}
 
 	bridges = mosquitto__realloc(db.bridges, (size_t)(db.bridge_count+1)*sizeof(struct mosquitto *));
 	if(bridges){
@@ -149,6 +155,7 @@ int bridge__connect_step1(struct mosquitto *context)
 	size_t notification_topic_len;
 	uint8_t notification_payload;
 	int i;
+	uint8_t qos;
 
 	if(!context || !context->bridge) return MOSQ_ERR_INVAL;
 
@@ -176,9 +183,14 @@ int bridge__connect_step1(struct mosquitto *context)
 	for(i=0; i<context->bridge->topic_count; i++){
 		if(context->bridge->topics[i].direction == bd_out || context->bridge->topics[i].direction == bd_both){
 			log__printf(NULL, MOSQ_LOG_DEBUG, "Bridge %s doing local SUBSCRIBE on topic %s", context->id, context->bridge->topics[i].local_topic);
+			if(context->bridge->topics[i].qos > context->max_qos){
+				qos = context->max_qos;
+			}else{
+				qos = context->bridge->topics[i].qos;
+			}
 			if(sub__add(context,
 						context->bridge->topics[i].local_topic,
-						context->bridge->topics[i].qos,
+						qos,
 						0,
 						MQTT_SUB_OPT_NO_LOCAL | MQTT_SUB_OPT_RETAIN_AS_PUBLISHED,
 						&db.subs) > 0){
@@ -186,7 +198,7 @@ int bridge__connect_step1(struct mosquitto *context)
 			}
 			retain__queue(context,
 					context->bridge->topics[i].local_topic,
-					context->bridge->topics[i].qos, 0);
+					qos, 0);
 		}
 	}
 
@@ -194,14 +206,19 @@ int bridge__connect_step1(struct mosquitto *context)
 	bridge__backoff_step(context);
 
 	if(context->bridge->notifications){
+		if(context->max_qos == 0){
+			qos = 0;
+		}else{
+			qos = 1;
+		}
 		if(context->bridge->notification_topic){
 			if(!context->bridge->initial_notification_done){
 				notification_payload = '0';
-				db__messages_easy_queue(context, context->bridge->notification_topic, 1, 1, &notification_payload, 1, 0, NULL);
+				db__messages_easy_queue(context, context->bridge->notification_topic, qos, 1, &notification_payload, 1, 0, NULL);
 				context->bridge->initial_notification_done = true;
 			}
 			notification_payload = '0';
-			rc = will__set(context, context->bridge->notification_topic, 1, &notification_payload, 1, true, NULL);
+			rc = will__set(context, context->bridge->notification_topic, 1, &notification_payload, qos, true, NULL);
 			if(rc != MOSQ_ERR_SUCCESS){
 				return rc;
 			}
@@ -214,12 +231,12 @@ int bridge__connect_step1(struct mosquitto *context)
 
 			if(!context->bridge->initial_notification_done){
 				notification_payload = '0';
-				db__messages_easy_queue(context, notification_topic, 1, 1, &notification_payload, 1, 0, NULL);
+				db__messages_easy_queue(context, notification_topic, qos, 1, &notification_payload, 1, 0, NULL);
 				context->bridge->initial_notification_done = true;
 			}
 
 			notification_payload = '0';
-			rc = will__set(context, notification_topic, 1, &notification_payload, 1, true, NULL);
+			rc = will__set(context, notification_topic, 1, &notification_payload, qos, true, NULL);
 			mosquitto__free(notification_topic);
 			if(rc != MOSQ_ERR_SUCCESS){
 				return rc;
@@ -231,6 +248,7 @@ int bridge__connect_step1(struct mosquitto *context)
 	rc = net__try_connect_step1(context, context->bridge->addresses[context->bridge->cur_address].address);
 	if(rc > 0 ){
 		if(rc == MOSQ_ERR_TLS){
+			mux__delete(context);
 			net__socket_close(context);
 			return rc; /* Error already printed */
 		}else if(rc == MOSQ_ERR_ERRNO){
@@ -256,6 +274,7 @@ int bridge__connect_step2(struct mosquitto *context)
 	rc = net__try_connect_step2(context, context->bridge->addresses[context->bridge->cur_address].port, &context->sock);
 	if(rc > 0){
 		if(rc == MOSQ_ERR_TLS){
+			mux__delete(context);
 			net__socket_close(context);
 			return rc; /* Error already printed */
 		}else if(rc == MOSQ_ERR_ERRNO){
@@ -271,6 +290,7 @@ int bridge__connect_step2(struct mosquitto *context)
 
 	if(rc == MOSQ_ERR_CONN_PENDING){
 		mosquitto__set_state(context, mosq_cs_connect_pending);
+		mux__add_out(context);
 	}
 	return rc;
 }
@@ -283,6 +303,7 @@ int bridge__connect_step3(struct mosquitto *context)
 	rc = net__socket_connect_step3(context, context->bridge->addresses[context->bridge->cur_address].address);
 	if(rc > 0){
 		if(rc == MOSQ_ERR_TLS){
+			mux__delete(context);
 			net__socket_close(context);
 			return rc; /* Error already printed */
 		}else if(rc == MOSQ_ERR_ERRNO){
@@ -300,10 +321,8 @@ int bridge__connect_step3(struct mosquitto *context)
 
 	rc = send__connect(context, context->keepalive, context->clean_start, NULL);
 	if(rc == MOSQ_ERR_SUCCESS){
-		bridge__backoff_reset(context);
 		return MOSQ_ERR_SUCCESS;
 	}else if(rc == MOSQ_ERR_ERRNO && errno == ENOTCONN){
-		bridge__backoff_reset(context);
 		return MOSQ_ERR_SUCCESS;
 	}else{
 		if(rc == MOSQ_ERR_TLS){
@@ -313,6 +332,7 @@ int bridge__connect_step3(struct mosquitto *context)
 		}else if(rc == MOSQ_ERR_EAI){
 			log__printf(NULL, MOSQ_LOG_ERR, "Error creating bridge: %s.", gai_strerror(errno));
 		}
+		mux__delete(context);
 		net__socket_close(context);
 		return rc;
 	}
@@ -326,6 +346,7 @@ int bridge__connect(struct mosquitto *context)
 	char *notification_topic = NULL;
 	size_t notification_topic_len;
 	uint8_t notification_payload;
+	uint8_t qos;
 
 	if(!context || !context->bridge) return MOSQ_ERR_INVAL;
 
@@ -353,9 +374,14 @@ int bridge__connect(struct mosquitto *context)
 	for(i=0; i<context->bridge->topic_count; i++){
 		if(context->bridge->topics[i].direction == bd_out || context->bridge->topics[i].direction == bd_both){
 			log__printf(NULL, MOSQ_LOG_DEBUG, "Bridge %s doing local SUBSCRIBE on topic %s", context->id, context->bridge->topics[i].local_topic);
+			if(context->bridge->topics[i].qos > context->max_qos){
+				qos = context->max_qos;
+			}else{
+				qos = context->bridge->topics[i].qos;
+			}
 			if(sub__add(context,
 						context->bridge->topics[i].local_topic,
-						context->bridge->topics[i].qos,
+						qos,
 						0,
 						MQTT_SUB_OPT_NO_LOCAL | MQTT_SUB_OPT_RETAIN_AS_PUBLISHED,
 						&db.subs) > 0){
@@ -369,19 +395,22 @@ int bridge__connect(struct mosquitto *context)
 	bridge__backoff_step(context);
 
 	if(context->bridge->notifications){
+		if(context->max_qos == 0){
+			qos = 0;
+		}else{
+			qos = 1;
+		}
 		if(context->bridge->notification_topic){
 			if(!context->bridge->initial_notification_done){
 				notification_payload = '0';
-				db__messages_easy_queue(context, context->bridge->notification_topic, 1, 1, &notification_payload, 1, 0, NULL);
+				db__messages_easy_queue(context, context->bridge->notification_topic, qos, 1, &notification_payload, 1, 0, NULL);
 				context->bridge->initial_notification_done = true;
 			}
 
-			if (!context->bridge->notifications_local_only) {
-				notification_payload = '0';
-				rc = will__set(context, context->bridge->notification_topic, 1, &notification_payload, 1, true, NULL);
-				if(rc != MOSQ_ERR_SUCCESS){
-					return rc;
-				}
+			notification_payload = '0';
+			rc = will__set(context, context->bridge->notification_topic, 1, &notification_payload, qos, true, NULL);
+			if(rc != MOSQ_ERR_SUCCESS){
+				return rc;
 			}
 		}else{
 			notification_topic_len = strlen(context->bridge->remote_clientid)+strlen("$SYS/broker/connection//state");
@@ -392,17 +421,15 @@ int bridge__connect(struct mosquitto *context)
 
 			if(!context->bridge->initial_notification_done){
 				notification_payload = '0';
-				db__messages_easy_queue(context, notification_topic, 1, 1, &notification_payload, 1, 0, NULL);
+				db__messages_easy_queue(context, notification_topic, qos, 1, &notification_payload, 1, 0, NULL);
 				context->bridge->initial_notification_done = true;
 			}
 
-			if (!context->bridge->notifications_local_only) {
-				notification_payload = '0';
-				rc = will__set(context, notification_topic, 1, &notification_payload, 1, true, NULL);
-				if(rc != MOSQ_ERR_SUCCESS){
-					mosquitto__free(notification_topic);
-					return rc;
-				}
+			notification_payload = '0';
+			rc = will__set(context, notification_topic, 1, &notification_payload, qos, true, NULL);
+			if(rc != MOSQ_ERR_SUCCESS){
+				mosquitto__free(notification_topic);
+				return rc;
 			}
 			mosquitto__free(notification_topic);
 		}
@@ -417,8 +444,8 @@ int bridge__connect(struct mosquitto *context)
 
 	if(rc > 0){
 		if(rc == MOSQ_ERR_TLS){
+			mux__delete(context);
 			net__socket_close(context);
-			mosquitto__free(notification_topic);
 			return rc; /* Error already printed */
 		}else if(rc == MOSQ_ERR_ERRNO){
 			log__printf(NULL, MOSQ_LOG_ERR, "Error creating bridge: %s.", strerror(errno));
@@ -429,16 +456,15 @@ int bridge__connect(struct mosquitto *context)
 		return rc;
 	}else if(rc == MOSQ_ERR_CONN_PENDING){
 		mosquitto__set_state(context, mosq_cs_connect_pending);
+		mux__add_out(context);
 	}
 
 	HASH_ADD(hh_sock, db.contexts_by_sock, sock, sizeof(context->sock), context);
 
 	rc2 = send__connect(context, context->keepalive, context->clean_start, NULL);
 	if(rc2 == MOSQ_ERR_SUCCESS){
-		bridge__backoff_reset(context);
 		return rc;
 	}else if(rc2 == MOSQ_ERR_ERRNO && errno == ENOTCONN){
-		bridge__backoff_reset(context);
 		return MOSQ_ERR_SUCCESS;
 	}else{
 		if(rc2 == MOSQ_ERR_TLS){
@@ -448,6 +474,7 @@ int bridge__connect(struct mosquitto *context)
 		}else if(rc2 == MOSQ_ERR_EAI){
 			log__printf(NULL, MOSQ_LOG_ERR, "Error creating bridge: %s.", gai_strerror(errno));
 		}
+		mux__delete(context);
 		net__socket_close(context);
 		return rc2;
 	}
@@ -463,8 +490,14 @@ int bridge__on_connect(struct mosquitto *context)
 	char notification_payload;
 	int sub_opts;
 	bool retain = true;
+	uint8_t qos;
 
 	if(context->bridge->notifications){
+		if(context->max_qos == 0){
+			qos = 0;
+		}else{
+			qos = 1;
+		}
 		if(!context->retain_available){
 			retain = false;
 		}
@@ -472,12 +505,12 @@ int bridge__on_connect(struct mosquitto *context)
 		if(context->bridge->notification_topic){
 			if(!context->bridge->notifications_local_only){
 				if(send__real_publish(context, mosquitto__mid_generate(context),
-						context->bridge->notification_topic, 1, &notification_payload, 1, retain, 0, NULL, NULL, 0)){
+						context->bridge->notification_topic, 1, &notification_payload, qos, retain, 0, NULL, NULL, 0)){
 
 					return 1;
 				}
 			}
-			db__messages_easy_queue(context, context->bridge->notification_topic, 1, 1, &notification_payload, 1, 0, NULL);
+			db__messages_easy_queue(context, context->bridge->notification_topic, qos, 1, &notification_payload, 1, 0, NULL);
 		}else{
 			notification_topic_len = strlen(context->bridge->remote_clientid)+strlen("$SYS/broker/connection//state");
 			notification_topic = mosquitto__malloc(sizeof(char)*(notification_topic_len+1));
@@ -487,19 +520,23 @@ int bridge__on_connect(struct mosquitto *context)
 			notification_payload = '1';
 			if(!context->bridge->notifications_local_only){
 				if(send__real_publish(context, mosquitto__mid_generate(context),
-						notification_topic, 1, &notification_payload, 1, retain, 0, NULL, NULL, 0)){
+						notification_topic, 1, &notification_payload, qos, retain, 0, NULL, NULL, 0)){
 
 					mosquitto__free(notification_topic);
 					return 1;
 				}
 			}
-			db__messages_easy_queue(context, notification_topic, 1, 1, &notification_payload, 1, 0, NULL);
+			db__messages_easy_queue(context, notification_topic, qos, 1, &notification_payload, 1, 0, NULL);
 			mosquitto__free(notification_topic);
 		}
 	}
 	for(i=0; i<context->bridge->topic_count; i++){
 		if(context->bridge->topics[i].direction == bd_in || context->bridge->topics[i].direction == bd_both){
-			sub_opts = context->bridge->topics[i].qos;
+			if(context->bridge->topics[i].qos > context->max_qos){
+				sub_opts = context->max_qos;
+			}else{
+				sub_opts = context->bridge->topics[i].qos;
+			}
 			if(context->bridge->protocol_version == mosq_p_mqtt5){
 				sub_opts = sub_opts
 					| MQTT_SUB_OPT_NO_LOCAL
@@ -522,11 +559,18 @@ int bridge__on_connect(struct mosquitto *context)
 	}
 	for(i=0; i<context->bridge->topic_count; i++){
 		if(context->bridge->topics[i].direction == bd_out || context->bridge->topics[i].direction == bd_both){
+			if(context->bridge->topics[i].qos > context->max_qos){
+				qos = context->max_qos;
+			}else{
+				qos = context->bridge->topics[i].qos;
+			}
 			retain__queue(context,
 					context->bridge->topics[i].local_topic,
-					context->bridge->topics[i].qos, 0);
+					qos, 0);
 		}
 	}
+
+	bridge__backoff_reset(context);
 
 	return MOSQ_ERR_SUCCESS;
 }
@@ -534,18 +578,17 @@ int bridge__on_connect(struct mosquitto *context)
 
 int bridge__register_local_connections(void)
 {
-#ifdef WITH_EPOLL
 	struct mosquitto *context, *ctxt_tmp = NULL;
 
 	HASH_ITER(hh_sock, db.contexts_by_sock, context, ctxt_tmp){
 		if(context->bridge){
 			if(mux__add_in(context)){
-				log__printf(NULL, MOSQ_LOG_ERR, "Error in epoll initial registering bridge: %s", strerror(errno));
+				log__printf(NULL, MOSQ_LOG_ERR, "Error in initial bridge registration: %s", strerror(errno));
 				return MOSQ_ERR_UNKNOWN;
 			}
+			mux__add_out(context);
 		}
 	}
-#endif
 	return MOSQ_ERR_SUCCESS;
 }
 
@@ -609,15 +652,16 @@ void bridge__packet_cleanup(struct mosquitto *context)
 	}
 	context->out_packet = NULL;
 	context->out_packet_last = NULL;
+	context->out_packet_count = 0;
 
 	packet__cleanup(&(context->in_packet));
 }
 
-static int rand_between(int base, int cap)
+static int rand_between(int low, int high)
 {
 	int r;
 	util__random_bytes(&r, sizeof(int));
-	return (r % (cap - base)) + base;
+	return (abs(r) % (high - low)) + low;
 }
 
 static void bridge__backoff_step(struct mosquitto *context)
@@ -652,6 +696,33 @@ static void bridge__backoff_reset(struct mosquitto *context)
 	}
 }
 
+
+static void bridge_check_pending(struct mosquitto *context)
+{
+	int err;
+	socklen_t len;
+
+	if(context->state == mosq_cs_connect_pending){
+		len = sizeof(int);
+		if(!getsockopt(context->sock, SOL_SOCKET, SO_ERROR, (char *)&err, &len)){
+			if(err == 0){
+				mosquitto__set_state(context, mosq_cs_new);
+#if defined(WITH_ADNS) && defined(WITH_BRIDGE)
+				if(context->bridge){
+					bridge__connect_step3(context);
+				}
+#endif
+			}else if(err == ECONNREFUSED){
+				do_disconnect(context, MOSQ_ERR_CONN_LOST);
+				return;
+			}
+		}else{
+			do_disconnect(context, MOSQ_ERR_CONN_LOST);
+			return;
+		}
+	}
+}
+
 void bridge_check(void)
 {
 	static time_t last_check = 0;
@@ -670,6 +741,7 @@ void bridge_check(void)
 
 		if(context->sock != INVALID_SOCKET){
 			mosquitto__check_keepalive(context);
+			bridge_check_pending(context);
 
 			/* Check for bridges that are not round robin and not currently
 			 * connected to their primary broker. */
@@ -688,6 +760,7 @@ void bridge_check(void)
 						COMPAT_CLOSE(context->bridge->primary_retry_sock);
 						context->bridge->primary_retry_sock = INVALID_SOCKET;
 						context->bridge->primary_retry = 0;
+						mux__delete(context);
 						net__socket_close(context);
 						context->bridge->cur_address = 0;
 					}
@@ -698,6 +771,7 @@ void bridge_check(void)
 							COMPAT_CLOSE(context->bridge->primary_retry_sock);
 							context->bridge->primary_retry_sock = INVALID_SOCKET;
 							context->bridge->primary_retry = 0;
+							mux__delete(context);
 							net__socket_close(context);
 							context->bridge->cur_address = context->bridge->address_count-1;
 						}else{
@@ -742,6 +816,8 @@ void bridge_check(void)
 									mux__add_out(context);
 								}
 							}else if(rc == MOSQ_ERR_CONN_PENDING){
+								mux__add_in(context);
+								mux__add_out(context);
 								context->bridge->restart_t = 0;
 							}else{
 								context->bridge->cur_address++;
@@ -775,7 +851,7 @@ void bridge_check(void)
 					{
 						rc = bridge__connect(context);
 						context->bridge->restart_t = 0;
-						if(rc == MOSQ_ERR_SUCCESS){
+						if(rc == MOSQ_ERR_SUCCESS || rc == MOSQ_ERR_CONN_PENDING){
 							if(context->bridge->round_robin == false && context->bridge->cur_address != 0){
 								context->bridge->primary_retry = db.now_s + 5;
 							}

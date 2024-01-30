@@ -4,12 +4,14 @@ Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -37,7 +39,9 @@ Contributors:
 #  include <ws2tcpip.h>
 #endif
 
-#if !defined(WIN32) && !defined(__CYGWIN__) && !defined(__QNX__)
+#if defined(__HAIKU__)
+#  include <syslog.h>
+#elif !defined(WIN32) && !defined(__CYGWIN__) && !defined(__QNX__)
 #  include <sys/syslog.h>
 #endif
 
@@ -48,7 +52,7 @@ Contributors:
 #include "mqtt_protocol.h"
 
 
-int scmp_p(const void *p1, const void *p2)
+static int scmp_p(const void *p1, const void *p2)
 {
 	const char *s1 = *(const char **)p1;
 	const char *s2 = *(const char **)p2;
@@ -77,7 +81,7 @@ int scmp_p(const void *p1, const void *p2)
 #ifdef WIN32
 int config__get_dir_files(const char *include_dir, char ***files, int *file_count)
 {
-	int len;
+	size_t len;
 	int i;
 	char **l_files = NULL;
 	int l_file_count = 0;

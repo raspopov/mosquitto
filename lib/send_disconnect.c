@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -41,15 +43,15 @@ int send__disconnect(struct mosquitto *mosq, uint8_t reason_code, const mosquitt
 #ifdef WITH_BROKER
 #  ifdef WITH_BRIDGE
 	if(mosq->bridge){
-		log__printf(mosq, MOSQ_LOG_DEBUG, "Bridge %s sending DISCONNECT", mosq->id);
+		log__printf(mosq, MOSQ_LOG_DEBUG, "Bridge %s sending DISCONNECT", SAFE_PRINT(mosq->id));
 	}else
 #  else
 	{
-		log__printf(mosq, MOSQ_LOG_DEBUG, "Sending DISCONNECT to %s (rc%d)", mosq->id, reason_code);
+		log__printf(mosq, MOSQ_LOG_DEBUG, "Sending DISCONNECT to %s (rc%d)", SAFE_PRINT(mosq->id), reason_code);
 	}
 #  endif
 #else
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending DISCONNECT", mosq->id);
+	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending DISCONNECT", SAFE_PRINT(mosq->id));
 #endif
 	assert(mosq);
 	packet = mosquitto__calloc(1, sizeof(struct mosquitto__packet));

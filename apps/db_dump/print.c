@@ -4,12 +4,14 @@ Copyright (c) 2010-2019 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -17,6 +19,7 @@ Contributors:
 #include <inttypes.h>
 #include <stdio.h>
 
+#include "db_dump.h"
 #include <mosquitto_broker_internal.h>
 #include <memory_mosq.h>
 #include <mqtt_protocol.h>
@@ -140,7 +143,7 @@ static void print__properties(mosquitto_property *properties)
 }
 
 
-void print__client(struct P_client *chunk, int length)
+void print__client(struct P_client *chunk, uint32_t length)
 {
 	printf("DB_CHUNK_CLIENT:\n");
 	printf("\tLength: %d\n", length);
@@ -157,7 +160,7 @@ void print__client(struct P_client *chunk, int length)
 }
 
 
-void print__client_msg(struct P_client_msg *chunk, int length)
+void print__client_msg(struct P_client_msg *chunk, uint32_t length)
 {
 	printf("DB_CHUNK_CLIENT_MSG:\n");
 	printf("\tLength: %d\n", length);
@@ -173,13 +176,15 @@ void print__client_msg(struct P_client_msg *chunk, int length)
 }
 
 
-void print__msg_store(struct P_msg_store *chunk, int length)
+void print__msg_store(struct P_msg_store *chunk, uint32_t length)
 {
+	uint8_t *payload;
+
 	printf("DB_CHUNK_MSG_STORE:\n");
 	printf("\tLength: %d\n", length);
 	printf("\tStore ID: %" PRIu64 "\n", chunk->F.store_id);
-	//printf("\tSource ID: %s\n", chunk->source_id);
-	//printf("\tSource Username: %s\n", chunk->source_username);
+	/* printf("\tSource ID: %s\n", chunk->source_id); */
+	/* printf("\tSource Username: %s\n", chunk->source_username); */
 	printf("\tSource Port: %d\n", chunk->F.source_port);
 	printf("\tSource MID: %d\n", chunk->F.source_mid);
 	printf("\tTopic: %s\n", chunk->topic);
@@ -187,8 +192,6 @@ void print__msg_store(struct P_msg_store *chunk, int length)
 	printf("\tRetain: %d\n", chunk->F.retain);
 	printf("\tPayload Length: %d\n", chunk->F.payloadlen);
 	printf("\tExpiry Time: %" PRIu64 "\n", chunk->F.expiry_time);
-
-	uint8_t *payload;
 
 	payload = chunk->payload;
 	if(chunk->F.payloadlen < 256){

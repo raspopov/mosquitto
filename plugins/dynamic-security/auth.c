@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -35,7 +37,7 @@ Contributors:
 int dynsec_auth__base64_encode(unsigned char *in, int in_len, char **encoded)
 {
 	BIO *bmem, *b64;
-	BUF_MEM *bptr;
+	BUF_MEM *bptr = NULL;
 
 	if(in_len < 0) return 1;
 
@@ -161,9 +163,7 @@ static int memcmp_const(const void *a, const void *b, size_t len)
 	if(!a || !b) return 1;
 
 	for(i=0; i<len; i++){
-		if( ((char *)a)[i] != ((char *)b)[i] ){
-			rc = 1;
-		}
+		rc |= ((char *)a)[i] ^ ((char *)b)[i];
 	}
 	return rc;
 }
@@ -175,6 +175,9 @@ int dynsec_auth__basic_auth_callback(int event, void *event_data, void *userdata
 	struct dynsec__client *client;
 	unsigned char password_hash[64]; /* For SHA512 */
 	const char *clientid;
+
+	UNUSED(event);
+	UNUSED(userdata);
 
 	if(ed->username == NULL || ed->password == NULL) return MOSQ_ERR_PLUGIN_DEFER;
 

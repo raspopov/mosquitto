@@ -59,6 +59,8 @@ WITH_SYS_TREE:=yes
 
 # Build with systemd support. If enabled, mosquitto will notify systemd after
 # initialization. See README in service/systemd/ for more information.
+# Setting to yes means the libsystemd-dev or similar package will need to be
+# installed.
 WITH_SYSTEMD:=no
 
 # Build with SRV lookup support.
@@ -118,6 +120,9 @@ WITH_JEMALLOC:=no
 # probably of no particular interest to end users.
 WITH_XTREPORT=no
 
+# Build using clang and with address sanitiser enabled
+WITH_ASAN=no
+
 # =============================================================================
 # End of user configuration
 # =============================================================================
@@ -125,7 +130,7 @@ WITH_XTREPORT=no
 
 # Also bump lib/mosquitto.h, CMakeLists.txt,
 # installer/mosquitto.nsi, installer/mosquitto64.nsi
-VERSION=2.0-dev0
+VERSION=2.0.18
 
 # Client library SO version. Bump if incompatible API/ABI changes are made.
 SOVERSION=1
@@ -138,6 +143,7 @@ DB_HTML_XSL=man/html.xsl
 #MANCOUNTRIES=en_GB
 
 UNAME:=$(shell uname -s)
+ARCH:=$(shell uname -p)
 
 ifeq ($(UNAME),SunOS)
 	ifeq ($(CC),cc)
@@ -146,7 +152,13 @@ ifeq ($(UNAME),SunOS)
 		CFLAGS?=-Wall -ggdb -O2
 	endif
 else
-	CFLAGS?=-Wall -ggdb -O2 -Wconversion
+	CFLAGS?=-Wall -ggdb -O2 -Wconversion -Wextra
+endif
+
+ifeq ($(WITH_ASAN),yes)
+	CC:=clang
+	CFLAGS+=-fsanitize=address
+	LDFLAGS+=-fsanitize=address
 endif
 
 STATIC_LIB_DEPS:=
@@ -179,6 +191,7 @@ PLUGIN_LDFLAGS:=$(LDFLAGS)
 
 ifneq ($(or $(findstring $(UNAME),FreeBSD), $(findstring $(UNAME),OpenBSD), $(findstring $(UNAME),NetBSD)),)
 	BROKER_LDADD:=$(BROKER_LDADD) -lm
+	BROKER_LDFLAGS:=$(BROKER_LDFLAGS) -Wl,--dynamic-list=linker.syms
 	SEDINPLACE:=-i ""
 else
 	BROKER_LDADD:=$(BROKER_LDADD) -ldl -lm
@@ -196,9 +209,15 @@ ifeq ($(WITH_SHARED_LIBRARIES),yes)
 endif
 
 ifeq ($(UNAME),SunOS)
-	ifeq ($(CC),cc)
-		LIB_CFLAGS:=$(LIB_CFLAGS) -xc99 -KPIC
-	else
+	SEDINPLACE:=
+	ifeq ($(ARCH),sparc)
+		ifeq ($(CC),cc)
+			LIB_CFLAGS:=$(LIB_CFLAGS) -xc99 -KPIC
+		else
+			LIB_CFLAGS:=$(LIB_CFLAGS) -fPIC
+		endif
+	endif
+	ifeq ($(ARCH),i386)
 		LIB_CFLAGS:=$(LIB_CFLAGS) -fPIC
 	endif
 
@@ -244,10 +263,10 @@ ifeq ($(WITH_TLS),yes)
 endif
 
 ifeq ($(WITH_THREADING),yes)
-	LIB_LIBADD:=$(LIB_LIBADD) -lpthread
+	LIB_LDFLAGS:=$(LIB_LDFLAGS) -pthread
 	LIB_CPPFLAGS:=$(LIB_CPPFLAGS) -DWITH_THREADING
 	CLIENT_CPPFLAGS:=$(CLIENT_CPPFLAGS) -DWITH_THREADING
-	STATIC_LIB_DEPS:=$(STATIC_LIB_DEPS) -lpthread
+	STATIC_LIB_DEPS:=$(STATIC_LIB_DEPS) -pthread
 endif
 
 ifeq ($(WITH_SOCKS),yes)
@@ -323,11 +342,6 @@ ifeq ($(WITH_WEBSOCKETS),yes)
 	BROKER_LDADD:=$(BROKER_LDADD) -lwebsockets
 endif
 
-ifeq ($(WITH_WEBSOCKETS),static)
-	BROKER_CPPFLAGS:=$(BROKER_CPPFLAGS) -DWITH_WEBSOCKETS
-	BROKER_LDADD:=$(BROKER_LDADD) -static -lwebsockets
-endif
-
 INSTALL?=install
 prefix?=/usr/local
 incdir?=${prefix}/include
@@ -364,9 +378,10 @@ ifeq ($(WITH_COVERAGE),yes)
 endif
 
 ifeq ($(WITH_CJSON),yes)
-	CLIENT_CFLAGS:=$(CLIENT_CFLAGS) -DWITH_CJSON -I/usr/include/cjson -I/usr/local/include/cjson
+	CLIENT_CFLAGS:=$(CLIENT_CFLAGS) -DWITH_CJSON
 	CLIENT_LDADD:=$(CLIENT_LDADD) -lcjson
 	CLIENT_STATIC_LDADD:=$(CLIENT_STATIC_LDADD) -lcjson
+	CLIENT_LDFLAGS:=$(CLIENT_LDFLAGS)
 endif
 
 ifeq ($(WITH_XTREPORT),yes)

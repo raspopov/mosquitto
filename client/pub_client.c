@@ -4,12 +4,14 @@ Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -133,6 +135,7 @@ void my_connect_callback(struct mosquitto *mosq, void *obj, int result, int flag
 	connack_result = result;
 
 	if(!result){
+		first_publish = true;
 		switch(cfg.pub_mode){
 			case MSGMODE_CMD:
 			case MSGMODE_FILE:
@@ -180,7 +183,7 @@ void my_connect_callback(struct mosquitto *mosq, void *obj, int result, int flag
 			}else{
 				err_printf(&cfg, "Connection error: %s\n", mosquitto_connack_string(result));
 			}
-			// let the loop know that this is an unrecoverable connection
+			/* let the loop know that this is an unrecoverable connection */
 			status = STATUS_NOHOPE;
 		}
 	}
@@ -230,7 +233,7 @@ int pub_shared_init(void)
 }
 
 
-int pub_stdin_line_loop(struct mosquitto *mosq)
+static int pub_stdin_line_loop(struct mosquitto *mosq)
 {
 	char *buf2;
 	int buf_len_actual = 0;
@@ -266,14 +269,13 @@ int pub_stdin_line_loop(struct mosquitto *mosq)
 					line_buf[buf_len_actual-1] = '\0';
 					rc = my_publish(mosq, &mid_sent, cfg.topic, buf_len_actual-1, line_buf, cfg.qos, cfg.retain);
 					pos = 0;
-					if(rc){
-						err_printf(&cfg, "Error: Publish returned %d.\n", rc);
-						if(cfg.qos>0) return rc;
+					if(rc != MOSQ_ERR_SUCCESS && rc != MOSQ_ERR_NO_CONN){
+						return rc;
 					}
 					break;
 				}else{
 					line_buf_len += 1024;
-					pos += 1023;
+					pos += read_len-1;
 					read_len = 1024;
 					buf2 = realloc(line_buf, (size_t )line_buf_len);
 					if(!buf2){
@@ -286,7 +288,6 @@ int pub_stdin_line_loop(struct mosquitto *mosq)
 			if(pos != 0){
 				rc = my_publish(mosq, &mid_sent, cfg.topic, buf_len_actual, line_buf, cfg.qos, cfg.retain);
 				if(rc){
-					err_printf(&cfg, "Error: Publish returned %d.\n", rc);
 					if(cfg.qos>0) return rc;
 				}
 			}
@@ -332,7 +333,7 @@ int pub_stdin_line_loop(struct mosquitto *mosq)
 }
 
 
-int pub_other_loop(struct mosquitto *mosq)
+static int pub_other_loop(struct mosquitto *mosq)
 {
 	int rc;
 	int loop_delay = 1000;
@@ -355,7 +356,7 @@ int pub_other_loop(struct mosquitto *mosq)
 					rc = my_publish(mosq, &mid_sent, cfg.topic, 0, NULL, cfg.qos, cfg.retain);
 					break;
 			}
-			if(rc){
+			if(rc != MOSQ_ERR_SUCCESS && rc != MOSQ_ERR_NO_CONN){
 				err_printf(&cfg, "Error sending repeat publish: %s", mosquitto_strerror(rc));
 			}
 		}
@@ -385,7 +386,7 @@ void pub_shared_cleanup(void)
 }
 
 
-void print_version(void)
+static void print_version(void)
 {
 	int major, minor, revision;
 
@@ -393,7 +394,7 @@ void print_version(void)
 	printf("mosquitto_pub version %s running on libmosquitto %d.%d.%d.\n", VERSION, major, minor, revision);
 }
 
-void print_usage(void)
+static void print_usage(void)
 {
 	int major, minor, revision;
 
@@ -418,6 +419,7 @@ void print_usage(void)
 	printf("                       [--ciphers ciphers] [--insecure]\n");
 	printf("                       [--tls-alpn protocol]\n");
 	printf("                       [--tls-engine engine] [--keyform keyform] [--tls-engine-kpass-sha1]]\n");
+	printf("                       [--tls-use-os-certs]\n");
 #ifdef FINAL_WITH_TLS_PSK
 	printf("                     [--psk hex-key --psk-identity identity [--ciphers ciphers]]\n");
 #endif
@@ -496,6 +498,7 @@ void print_usage(void)
 	printf("              Do not use this option in a production environment.\n");
 	printf(" --tls-engine : If set, enables the use of a TLS engine device.\n");
 	printf(" --tls-engine-kpass-sha1 : SHA1 of the key password to be used with the selected SSL engine.\n");
+	printf(" --tls-use-os-certs : Load and trust OS provided CA certificates.\n");
 #  ifdef FINAL_WITH_TLS_PSK
 	printf(" --psk : pre-shared-key in hexadecimal (no leading 0x) to enable TLS-PSK mode.\n");
 	printf(" --psk-identity : client identity string for TLS-PSK mode.\n");

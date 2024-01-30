@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -25,6 +27,7 @@ Contributors:
 #include "net_mosq.h"
 #include "packet_mosq.h"
 #include "property_mosq.h"
+#include "read_handle.h"
 #include "send_mosq.h"
 #include "util_mosq.h"
 
@@ -40,6 +43,9 @@ int handle__disconnect(struct mosquitto *mosq)
 
 	if(mosq->protocol != mosq_p_mqtt5){
 		return MOSQ_ERR_PROTOCOL;
+	}
+	if(mosq->in_packet.command != CMD_DISCONNECT){
+		return MOSQ_ERR_MALFORMED_PACKET;
 	}
 
 	rc = packet__read_byte(&mosq->in_packet, &reason_code);

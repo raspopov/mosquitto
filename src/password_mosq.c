@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -17,10 +19,12 @@ Contributors:
 #include "config.h"
 
 #include <errno.h>
-#include <openssl/opensslv.h>
-#include <openssl/evp.h>
-#include <openssl/rand.h>
-#include <openssl/buffer.h>
+#ifdef WITH_TLS
+#  include <openssl/opensslv.h>
+#  include <openssl/evp.h>
+#  include <openssl/rand.h>
+#  include <openssl/buffer.h>
+#endif
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -197,9 +201,7 @@ int pw__memcmp_const(const void *a, const void *b, size_t len)
 	if(!a || !b) return 1;
 
 	for(i=0; i<len; i++){
-		if( ((char *)a)[i] != ((char *)b)[i] ){
-			rc = 1;
-		}
+		rc |= ((char *)a)[i] ^ ((char *)b)[i];
 	}
 	return rc;
 }

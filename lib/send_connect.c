@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -30,6 +32,7 @@ Contributors:
 #include "mqtt_protocol.h"
 #include "packet_mosq.h"
 #include "property_mosq.h"
+#include "send_mosq.h"
 
 int send__connect(struct mosquitto *mosq, uint16_t keepalive, bool clean_session, const mosquitto_property *properties)
 {
@@ -100,7 +103,11 @@ int send__connect(struct mosquitto *mosq, uint16_t keepalive, bool clean_session
 	}else{
 		payloadlen = 2U;
 	}
+#ifdef WITH_BROKER
+	if(mosq->will && (mosq->bridge == NULL || mosq->bridge->notifications_local_only == false)){
+#else
 	if(mosq->will){
+#endif
 		will = 1;
 		assert(mosq->will->msg.topic);
 
@@ -148,7 +155,7 @@ int send__connect(struct mosquitto *mosq, uint16_t keepalive, bool clean_session
 	}
 #endif
 	packet__write_byte(packet, version);
-	byte = (clean_session&0x1)<<1;
+	byte = (uint8_t)((clean_session&0x1)<<1);
 	if(will){
 		byte = byte | (uint8_t)(((mosq->will->msg.qos&0x3)<<3) | ((will&0x1)<<2));
 		if(mosq->retain_available){
@@ -197,10 +204,10 @@ int send__connect(struct mosquitto *mosq, uint16_t keepalive, bool clean_session
 	mosq->keepalive = keepalive;
 #ifdef WITH_BROKER
 # ifdef WITH_BRIDGE
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Bridge %s sending CONNECT", clientid);
+	log__printf(mosq, MOSQ_LOG_DEBUG, "Bridge %s sending CONNECT", SAFE_PRINT(clientid));
 # endif
 #else
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending CONNECT", clientid);
+	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending CONNECT", SAFE_PRINT(clientid));
 #endif
 	return packet__queue(mosq, packet);
 }

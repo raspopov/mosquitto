@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -21,7 +23,7 @@ Contributors:
 #include <limits.h>
 #ifdef WIN32
 #  include <ws2tcpip.h>
-#elif __QNX__
+#elif defined(__QNX__)
 #  include <sys/socket.h>
 #  include <arpa/inet.h>
 #  include <netinet/in.h>
@@ -38,6 +40,7 @@ Contributors:
 #include "net_mosq.h"
 #include "packet_mosq.h"
 #include "send_mosq.h"
+#include "socks_mosq.h"
 #include "util_mosq.h"
 
 #define SOCKS_AUTH_NONE 0x00U
@@ -105,6 +108,12 @@ int mosquitto_socks5_set(struct mosquitto *mosq, const char *host, int port, con
 
 	return MOSQ_ERR_SUCCESS;
 #else
+	UNUSED(mosq);
+	UNUSED(host);
+	UNUSED(port);
+	UNUSED(username);
+	UNUSED(password);
+
 	return MOSQ_ERR_NOT_SUPPORTED;
 #endif
 }
@@ -120,7 +129,7 @@ int socks5__send(struct mosquitto *mosq)
 	struct in6_addr addr_ipv6;
 	int ipv4_pton_result;
 	int ipv6_pton_result;
-	int state;
+	enum mosquitto_client_state state;
 
 	state = mosquitto__get_state(mosq);
 
@@ -262,7 +271,7 @@ int socks5__read(struct mosquitto *mosq)
 	ssize_t len;
 	uint8_t *payload;
 	uint8_t i;
-	int state;
+	enum mosquitto_client_state state;
 
 	state = mosquitto__get_state(mosq);
 	if(state == mosq_cs_socks5_start){

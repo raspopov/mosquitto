@@ -574,7 +574,7 @@ static void TEST_v6_client(void)
 	memset(&config, 0, sizeof(struct mosquitto__config));
 	memset(&listener, 0, sizeof(struct mosquitto__listener));
 	db.config = &config;
-	
+
 	listener.port = 1883;
 	config.per_listener_settings = true;
 	config.listeners = &listener;
@@ -831,6 +831,9 @@ int init_persist_read_tests(void)
 int main(int argc, char *argv[])
 {
 	unsigned int fails;
+
+	UNUSED(argc);
+	UNUSED(argv);
 
     if(CU_initialize_registry() != CUE_SUCCESS){
         printf("Error initializing CUnit registry.\n");

@@ -19,7 +19,7 @@ class TestError(Exception):
     def __init__(self, message="Mismatched packets"):
         self.message = message
 
-def start_broker(filename, cmd=None, port=0, use_conf=False, expect_fail=False):
+def start_broker(filename, cmd=None, port=0, use_conf=False, expect_fail=False, nolog=False):
     global vg_index
     global vg_logfiles
 
@@ -48,7 +48,10 @@ def start_broker(filename, cmd=None, port=0, use_conf=False, expect_fail=False):
 
     #print(port)
     #print(cmd)
-    broker = subprocess.Popen(cmd, stderr=subprocess.PIPE)
+    if nolog == False:
+        broker = subprocess.Popen(cmd, stderr=subprocess.PIPE)
+    else:
+        broker = subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
     for i in range(0, 20):
         time.sleep(delay)
         c = None
@@ -60,7 +63,6 @@ def start_broker(filename, cmd=None, port=0, use_conf=False, expect_fail=False):
 
         if c is not None:
             c.close()
-            time.sleep(delay)
             return broker
 
     if expect_fail == False:
@@ -68,7 +70,7 @@ def start_broker(filename, cmd=None, port=0, use_conf=False, expect_fail=False):
         print("FAIL: unable to start broker: %s" % errs)
         raise IOError
     else:
-        return None
+        return broker
 
 def start_client(filename, cmd, env, port=1888):
     if cmd is None:
@@ -159,10 +161,14 @@ def do_receive_send(sock, receive_packet, send_packet, error_string="receive sen
         raise ValueError
 
 
-def do_client_connect(connect_packet, connack_packet, hostname="localhost", port=1888, timeout=10, connack_error="connack"):
+def client_connect_only(hostname="localhost", port=1888, timeout=10):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     sock.connect((hostname, port))
+    return sock
+
+def do_client_connect(connect_packet, connack_packet, hostname="localhost", port=1888, timeout=10, connack_error="connack"):
+    sock = client_connect_only(hostname, port, timeout)
 
     return do_send_receive(sock, connect_packet, connack_packet, connack_error)
 
@@ -201,7 +207,7 @@ def to_string(packet):
     if len(packet) == 0:
         return ""
 
-    packet0 = struct.unpack("!B", bytes(packet[0]))
+    packet0 = struct.unpack("!B%ds" % (len(packet)-1), bytes(packet))
     packet0 = packet0[0]
     cmd = packet0 & 0xF0
     if cmd == 0x00:
@@ -214,7 +220,7 @@ def to_string(packet):
         (slen, packet) = struct.unpack(pack_format, packet)
         pack_format = "!" + str(slen)+'sBBH' + str(len(packet)-slen-4) + 's'
         (protocol, proto_ver, flags, keepalive, packet) = struct.unpack(pack_format, packet)
-        s = "CONNECT, proto="+protocol+str(proto_ver)+", keepalive="+str(keepalive)
+        s = "CONNECT, proto="+str(protocol)+str(proto_ver)+", keepalive="+str(keepalive)
         if flags&2:
             s = s+", clean-session"
         else:
@@ -224,14 +230,14 @@ def to_string(packet):
         (slen, packet) = struct.unpack(pack_format, packet)
         pack_format = "!" + str(slen)+'s' + str(len(packet)-slen) + 's'
         (client_id, packet) = struct.unpack(pack_format, packet)
-        s = s+", id="+client_id
+        s = s+", id="+str(client_id)
 
         if flags&4:
             pack_format = "!H" + str(len(packet)-2) + 's'
             (slen, packet) = struct.unpack(pack_format, packet)
             pack_format = "!" + str(slen)+'s' + str(len(packet)-slen) + 's'
             (will_topic, packet) = struct.unpack(pack_format, packet)
-            s = s+", will-topic="+will_topic
+            s = s+", will-topic="+str(will_topic)
 
             pack_format = "!H" + str(len(packet)-2) + 's'
             (slen, packet) = struct.unpack(pack_format, packet)
@@ -247,14 +253,14 @@ def to_string(packet):
             (slen, packet) = struct.unpack(pack_format, packet)
             pack_format = "!" + str(slen)+'s' + str(len(packet)-slen) + 's'
             (username, packet) = struct.unpack(pack_format, packet)
-            s = s+", username="+username
+            s = s+", username="+str(username)
 
         if flags&64:
             pack_format = "!H" + str(len(packet)-2) + 's'
             (slen, packet) = struct.unpack(pack_format, packet)
             pack_format = "!" + str(slen)+'s' + str(len(packet)-slen) + 's'
             (password, packet) = struct.unpack(pack_format, packet)
-            s = s+", password="+password
+            s = s+", password="+str(password)
 
         if flags&1:
             s = s+", reserved=1"
@@ -274,22 +280,30 @@ def to_string(packet):
         (tlen, packet) = struct.unpack(pack_format, packet)
         pack_format = "!" + str(tlen)+'s' + str(len(packet)-tlen) + 's'
         (topic, packet) = struct.unpack(pack_format, packet)
-        s = "PUBLISH, rl="+str(rl)+", topic="+topic+", qos="+str(qos)+", retain="+str(retain)+", dup="+str(dup)
+        s = "PUBLISH, rl="+str(rl)+", topic="+str(topic)+", qos="+str(qos)+", retain="+str(retain)+", dup="+str(dup)
         if qos > 0:
             pack_format = "!H" + str(len(packet)-2) + 's'
             (mid, packet) = struct.unpack(pack_format, packet)
             s = s + ", mid="+str(mid)
 
-        s = s + ", payload="+packet
+        s = s + ", payload="+str(packet)
         return s
     elif cmd == 0x40:
         # PUBACK
-        (cmd, rl, mid) = struct.unpack('!BBH', packet)
-        return "PUBACK, rl="+str(rl)+", mid="+str(mid)
+        if len(packet) == 5:
+            (cmd, rl, mid, reason_code) = struct.unpack('!BBHB', packet)
+            return "PUBACK, rl="+str(rl)+", mid="+str(mid)+", reason_code="+str(reason_code)
+        else:
+            (cmd, rl, mid) = struct.unpack('!BBH', packet)
+            return "PUBACK, rl="+str(rl)+", mid="+str(mid)
     elif cmd == 0x50:
         # PUBREC
-        (cmd, rl, mid) = struct.unpack('!BBH', packet)
-        return "PUBREC, rl="+str(rl)+", mid="+str(mid)
+        if len(packet) == 5:
+            (cmd, rl, mid, reason_code) = struct.unpack('!BBHB', packet)
+            return "PUBREC, rl="+str(rl)+", mid="+str(mid)+", reason_code="+str(reason_code)
+        else:
+            (cmd, rl, mid) = struct.unpack('!BBH', packet)
+            return "PUBREC, rl="+str(rl)+", mid="+str(mid)
     elif cmd == 0x60:
         # PUBREL
         dup = (packet0 & 0x08)>>3
@@ -311,7 +325,7 @@ def to_string(packet):
             (tlen, packet) = struct.unpack(pack_format, packet)
             pack_format = "!" + str(tlen)+'sB' + str(len(packet)-tlen-1) + 's'
             (topic, qos, packet) = struct.unpack(pack_format, packet)
-            s = s + ", topic"+str(topic_index)+"="+topic+","+str(qos)
+            s = s + ", topic"+str(topic_index)+"="+str(topic)+","+str(qos)
         return s
     elif cmd == 0x90:
         # SUBACK
@@ -337,7 +351,7 @@ def to_string(packet):
             (tlen, packet) = struct.unpack(pack_format, packet)
             pack_format = "!" + str(tlen)+'s' + str(len(packet)-tlen) + 's'
             (topic, packet) = struct.unpack(pack_format, packet)
-            s = s + ", topic"+str(topic_index)+"="+topic
+            s = s + ", topic"+str(topic_index)+"="+str(topic)
         return s
     elif cmd == 0xB0:
         # UNSUBACK
@@ -353,8 +367,12 @@ def to_string(packet):
         return "PINGRESP, rl="+str(rl)
     elif cmd == 0xE0:
         # DISCONNECT
-        (cmd, rl) = struct.unpack('!BB', packet)
-        return "DISCONNECT, rl="+str(rl)
+        if len(packet) == 3:
+            (cmd, rl, reason_code) = struct.unpack('!BBB', packet)
+            return "DISCONNECT, rl="+str(rl)+", reason_code="+str(reason_code)
+        else:
+            (cmd, rl) = struct.unpack('!BB', packet)
+            return "DISCONNECT, rl="+str(rl)
     elif cmd == 0xF0:
         # AUTH
         (cmd, rl) = struct.unpack('!BB', packet)
@@ -403,6 +421,16 @@ def read_publish(sock, proto_ver=4):
 
     payload = sock.recv(rl).decode('utf-8')
     return payload
+
+
+def gen_fixed_hdr(command, remaining_length):
+    return struct.pack("B", command) + pack_remaining_length(remaining_length)
+
+def gen_variable_hdr(mid=None):
+    if mid is not None:
+        return struct.pack("!H", mid)
+    else:
+        return b""
 
 
 def gen_connect(client_id, clean_session=True, keepalive=60, username=None, password=None, will_topic=None, will_qos=0, will_retain=False, will_payload=b"", proto_ver=4, connect_reserved=False, properties=b"", will_properties=b"", session_expiry=-1):
@@ -697,7 +725,7 @@ def get_port(count=1):
         else:
             return 1888
     else:
-        if len(sys.argv) == 1+count:
+        if len(sys.argv) >= 1+count:
             p = ()
             for i in range(0, count):
                 p = p + (int(sys.argv[1+i]),)

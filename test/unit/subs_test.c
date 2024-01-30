@@ -63,7 +63,7 @@ static void TEST_sub_add_single(void)
 	CU_ASSERT_PTR_NOT_NULL(db.subs);
 	if(db.subs){
 		sub = db.subs;
-		
+
 		hier_quick_check(&sub, NULL, "");
 		hier_quick_check(&sub, NULL, "");
 		hier_quick_check(&sub, NULL, "a");
@@ -87,6 +87,9 @@ int main(int argc, char *argv[])
 {
 	CU_pSuite test_suite = NULL;
 	unsigned int fails;
+
+	UNUSED(argc);
+	UNUSED(argv);
 
     if(CU_initialize_registry() != CUE_SUCCESS){
         printf("Error initializing CUnit registry.\n");

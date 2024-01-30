@@ -12,17 +12,18 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 #include <stdbool.h>
 
 /* "optional==false" can also be taken to mean "only return success if the key exists and is valid" */
 int json_get_bool(cJSON *json, const char *name, bool *value, bool optional, bool default_value);
 int json_get_int(cJSON *json, const char *name, int *value, bool optional, int default_value);
 int json_get_string(cJSON *json, const char *name, char **value, bool optional);
-double json_get_as_number(const cJSON *json);
 
 cJSON *cJSON_AddIntToObject(cJSON * const object, const char * const name, int number);
 cJSON *cJSON_CreateInt(int num);

@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -31,7 +33,7 @@ int handle__unsubscribe(struct mosquitto *context)
 	char *sub;
 	uint16_t slen;
 	int rc;
-	uint8_t reason;
+	uint8_t reason = 0;
 	int reason_code_count = 0;
 	int reason_code_max;
 	uint8_t *reason_codes = NULL, *reason_tmp;
@@ -42,6 +44,9 @@ int handle__unsubscribe(struct mosquitto *context)
 
 	if(context->state != mosq_cs_active){
 		return MOSQ_ERR_PROTOCOL;
+	}
+	if(context->in_packet.command != (CMD_UNSUBSCRIBE|2)){
+		return MOSQ_ERR_MALFORMED_PACKET;
 	}
 	log__printf(NULL, MOSQ_LOG_DEBUG, "Received UNSUBSCRIBE from %s", context->id);
 

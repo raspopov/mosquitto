@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -69,7 +71,7 @@ int packet__alloc(struct mosquitto__packet *packet)
 	if(packet->remaining_count == 5) return MOSQ_ERR_PAYLOAD_SIZE;
 	packet->packet_length = packet->remaining_length + 1 + (uint8_t)packet->remaining_count;
 #ifdef WITH_WEBSOCKETS
-	packet->payload = mosquitto__malloc(sizeof(uint8_t)*packet->packet_length + LWS_SEND_BUFFER_PRE_PADDING + LWS_SEND_BUFFER_POST_PADDING);
+	packet->payload = mosquitto__malloc(sizeof(uint8_t)*packet->packet_length + LWS_PRE);
 #else
 	packet->payload = mosquitto__malloc(sizeof(uint8_t)*packet->packet_length);
 #endif
@@ -120,6 +122,7 @@ void packet__cleanup_all_no_locks(struct mosquitto *mosq)
 		packet__cleanup(packet);
 		mosquitto__free(packet);
 	}
+	mosq->out_packet_count = 0;
 
 	packet__cleanup(&mosq->in_packet);
 }
@@ -149,17 +152,33 @@ int packet__queue(struct mosquitto *mosq, struct mosquitto__packet *packet)
 
 	packet->next = NULL;
 	pthread_mutex_lock(&mosq->out_packet_mutex);
+
+#ifdef WITH_BROKER
+	if(db.config->max_queued_messages > 0 && mosq->out_packet_count >= db.config->max_queued_messages){
+		mosquitto__free(packet);
+		if(mosq->is_dropping == false){
+			mosq->is_dropping = true;
+			log__printf(NULL, MOSQ_LOG_NOTICE,
+					"Outgoing messages are being dropped for client %s.",
+					mosq->id);
+		}
+		G_MSGS_DROPPED_INC();
+		return MOSQ_ERR_SUCCESS;
+	}
+#endif
+
 	if(mosq->out_packet){
 		mosq->out_packet_last->next = packet;
 	}else{
 		mosq->out_packet = packet;
 	}
 	mosq->out_packet_last = packet;
+	mosq->out_packet_count++;
 	pthread_mutex_unlock(&mosq->out_packet_mutex);
 #ifdef WITH_BROKER
 #  ifdef WITH_WEBSOCKETS
 	if(mosq->wsi){
-		libwebsocket_callback_on_writable(mosq->ws_context, mosq->wsi);
+		lws_callback_on_writable(mosq->wsi);
 		return MOSQ_ERR_SUCCESS;
 	}else{
 		return packet__write(mosq);
@@ -208,7 +227,7 @@ int packet__write(struct mosquitto *mosq)
 {
 	ssize_t write_length;
 	struct mosquitto__packet *packet;
-	int state;
+	enum mosquitto_client_state state;
 
 	if(!mosq) return MOSQ_ERR_INVAL;
 	if(mosq->sock == INVALID_SOCKET) return MOSQ_ERR_NO_CONN;
@@ -221,15 +240,18 @@ int packet__write(struct mosquitto *mosq)
 		if(!mosq->out_packet){
 			mosq->out_packet_last = NULL;
 		}
+		mosq->out_packet_count--;
 	}
 	pthread_mutex_unlock(&mosq->out_packet_mutex);
 
-	state = mosquitto__get_state(mosq);
-#if defined(WITH_TLS) && !defined(WITH_BROKER)
-	if((state == mosq_cs_connect_pending) || mosq->want_connect){
-#else
-	if(state == mosq_cs_connect_pending){
+#ifdef WITH_BROKER
+	if(mosq->current_out_packet){
+	   mux__add_out(mosq);
+	}
 #endif
+
+	state = mosquitto__get_state(mosq);
+	if(state == mosq_cs_connect_pending){
 		pthread_mutex_unlock(&mosq->current_out_packet_mutex);
 		return MOSQ_ERR_SUCCESS;
 	}
@@ -261,6 +283,8 @@ int packet__write(struct mosquitto *mosq)
 							return MOSQ_ERR_CONN_LOST;
 						case COMPAT_EINTR:
 							return MOSQ_ERR_SUCCESS;
+						case EPROTO:
+							return MOSQ_ERR_TLS;
 						default:
 							return MOSQ_ERR_ERRNO;
 					}
@@ -292,6 +316,8 @@ int packet__write(struct mosquitto *mosq)
 			mosquitto__free(packet);
 			return MOSQ_ERR_SUCCESS;
 #endif
+		}else if(((packet->command)&0xF0) == CMD_PUBLISH){
+			G_PUB_MSGS_SENT_INC(1);
 		}
 
 		/* Free data and reset values */
@@ -302,6 +328,7 @@ int packet__write(struct mosquitto *mosq)
 			if(!mosq->out_packet){
 				mosq->out_packet_last = NULL;
 			}
+			mosq->out_packet_count--;
 		}
 		pthread_mutex_unlock(&mosq->out_packet_mutex);
 
@@ -316,6 +343,11 @@ int packet__write(struct mosquitto *mosq)
 		pthread_mutex_unlock(&mosq->msgtime_mutex);
 #endif
 	}
+#ifdef WITH_BROKER
+	if (mosq->current_out_packet == NULL) {
+		mux__remove_out(mosq);
+	}
+#endif
 	pthread_mutex_unlock(&mosq->current_out_packet_mutex);
 	return MOSQ_ERR_SUCCESS;
 }
@@ -326,7 +358,7 @@ int packet__read(struct mosquitto *mosq)
 	uint8_t byte;
 	ssize_t read_length;
 	int rc = 0;
-	int state;
+	enum mosquitto_client_state state;
 
 	if(!mosq){
 		return MOSQ_ERR_INVAL;
@@ -361,7 +393,7 @@ int packet__read(struct mosquitto *mosq)
 #ifdef WITH_BROKER
 			G_BYTES_RECEIVED_INC(1);
 			/* Clients must send CONNECT as their first command. */
-			if(!(mosq->bridge) && mosq->state == mosq_cs_connected && (byte&0xF0) != CMD_CONNECT){
+			if(!(mosq->bridge) && state == mosq_cs_new && (byte&0xF0) != CMD_CONNECT){
 				return MOSQ_ERR_PROTOCOL;
 			}
 #endif
@@ -404,7 +436,7 @@ int packet__read(struct mosquitto *mosq)
 				 * Anything more likely means a broken/malicious client.
 				 */
 				if(mosq->in_packet.remaining_count < -4){
-					return MOSQ_ERR_PROTOCOL;
+					return MOSQ_ERR_MALFORMED_PACKET;
 				}
 
 				G_BYTES_RECEIVED_INC(1);
@@ -436,6 +468,37 @@ int packet__read(struct mosquitto *mosq)
 		mosq->in_packet.remaining_count = (int8_t)(mosq->in_packet.remaining_count * -1);
 
 #ifdef WITH_BROKER
+		switch(mosq->in_packet.command & 0xF0){
+			case CMD_CONNECT:
+				if(mosq->in_packet.remaining_length > 100000){ /* Arbitrary limit, make configurable */
+					return MOSQ_ERR_MALFORMED_PACKET;
+				}
+				break;
+
+			case CMD_PUBACK:
+			case CMD_PUBREC:
+			case CMD_PUBREL:
+			case CMD_PUBCOMP:
+			case CMD_UNSUBACK:
+				if(mosq->protocol != mosq_p_mqtt5 && mosq->in_packet.remaining_length != 2){
+					return MOSQ_ERR_MALFORMED_PACKET;
+				}
+				break;
+
+			case CMD_PINGREQ:
+			case CMD_PINGRESP:
+				if(mosq->in_packet.remaining_length != 0){
+					return MOSQ_ERR_MALFORMED_PACKET;
+				}
+				break;
+
+			case CMD_DISCONNECT:
+				if(mosq->protocol != mosq_p_mqtt5 && mosq->in_packet.remaining_length != 0){
+					return MOSQ_ERR_MALFORMED_PACKET;
+				}
+				break;
+		}
+
 		if(db.config->max_packet_size > 0 && mosq->in_packet.remaining_length+1 > db.config->max_packet_size){
 			if(mosq->protocol == mosq_p_mqtt5){
 				send__disconnect(mosq, MQTT_RC_PACKET_TOO_LARGE, NULL);
@@ -443,7 +506,7 @@ int packet__read(struct mosquitto *mosq)
 			return MOSQ_ERR_OVERSIZE_PACKET;
 		}
 #else
-		// FIXME - client case for incoming message received from broker too large
+		/* FIXME - client case for incoming message received from broker too large */
 #endif
 		if(mosq->in_packet.remaining_length > 0){
 			mosq->in_packet.payload = mosquitto__malloc(mosq->in_packet.remaining_length*sizeof(uint8_t));
@@ -496,7 +559,7 @@ int packet__read(struct mosquitto *mosq)
 	mosq->in_packet.pos = 0;
 #ifdef WITH_BROKER
 	G_MSGS_RECEIVED_INC(1);
-	if(((mosq->in_packet.command)&0xF5) == CMD_PUBLISH){
+	if(((mosq->in_packet.command)&0xF0) == CMD_PUBLISH){
 		G_PUB_MSGS_RECEIVED_INC(1);
 	}
 #endif

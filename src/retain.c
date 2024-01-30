@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -60,13 +62,32 @@ int retain__init(void)
 {
 	struct mosquitto__retainhier *retainhier;
 
-	retainhier = retain__add_hier_entry(NULL, &db.retains, "", strlen(""));
+	retainhier = retain__add_hier_entry(NULL, &db.retains, "", 0);
 	if(!retainhier) return MOSQ_ERR_NOMEM;
 
-	retainhier = retain__add_hier_entry(NULL, &db.retains, "$SYS", strlen("$SYS"));
+	retainhier = retain__add_hier_entry(NULL, &db.retains, "$SYS", (uint16_t)strlen("$SYS"));
 	if(!retainhier) return MOSQ_ERR_NOMEM;
 
 	return MOSQ_ERR_SUCCESS;
+}
+
+
+void retain__clean_empty_hierarchy(struct mosquitto__retainhier *retainhier)
+{
+	struct mosquitto__retainhier *parent;
+
+	while(retainhier){
+		if(retainhier->children || retainhier->retained || retainhier->parent == NULL){
+			/* Entry is being used */
+			return;
+		}else{
+			HASH_DELETE(hh, retainhier->parent->children, retainhier);
+			mosquitto__free(retainhier->topic);
+			parent = retainhier->parent;
+			mosquitto__free(retainhier);
+			retainhier = parent;
+		}
+	}
 }
 
 
@@ -81,7 +102,10 @@ int retain__store(const char *topic, struct mosquitto_msg_store *stored, char **
 	assert(split_topics);
 
 	HASH_FIND(hh, db.retains, split_topics[0], strlen(split_topics[0]), retainhier);
-	if(retainhier == NULL) return MOSQ_ERR_NOT_FOUND;
+	if(retainhier == NULL){
+		retainhier = retain__add_hier_entry(NULL, &db.retains, split_topics[0], (uint16_t)strlen(split_topics[0]));
+		if(!retainhier) return MOSQ_ERR_NOMEM;
+	}
 
 	for(i=0; split_topics[i] != NULL; i++){
 		slen = strlen(split_topics[i]);
@@ -101,7 +125,10 @@ int retain__store(const char *topic, struct mosquitto_msg_store *stored, char **
 		 * they aren't for $SYS. */
 		db.persistence_changes++;
 	}
+#else
+	UNUSED(topic);
 #endif
+
 	if(retainhier->retained){
 		db__msg_store_ref_dec(&retainhier->retained);
 #ifdef WITH_SYS_TREE
@@ -116,6 +143,7 @@ int retain__store(const char *topic, struct mosquitto_msg_store *stored, char **
 #endif
 	}else{
 		retainhier->retained = NULL;
+		retain__clean_empty_hierarchy(retainhier);
 	}
 
 	return MOSQ_ERR_SUCCESS;
@@ -256,6 +284,10 @@ int retain__queue(struct mosquitto *context, const char *sub, uint8_t sub_qos, u
 
 	assert(context);
 	assert(sub);
+
+	if(!strncmp(sub, "$share/", strlen("$share/"))){
+		return MOSQ_ERR_SUCCESS;
+	}
 
 	rc = sub__topic_tokenise(sub, &local_sub, &split_topics, NULL);
 	if(rc) return rc;

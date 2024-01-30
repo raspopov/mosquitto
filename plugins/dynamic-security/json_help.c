@@ -10,17 +10,20 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
 
 #include "config.h"
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
 
+#include "json_help.h"
 #include "mosquitto.h"
 
 
@@ -90,22 +93,6 @@ int json_get_string(cJSON *json, const char *name, char **value, bool optional)
 	return MOSQ_ERR_SUCCESS;
 }
 
-
-/* Return a number as a number, or attempt to convert a string to a number, or a bool to a number */
-double json_get_as_number(const cJSON *json)
-{
-	char *endptr = NULL;
-
-	if(cJSON_IsNumber(json)){
-		return json->valuedouble;
-	}else if(cJSON_IsString(json)){
-		return strtod(json->valuestring, &endptr);
-	}else if(cJSON_IsBool(json)){
-		return cJSON_IsTrue(json);
-	}else{
-		return 0.0;
-	}
-}
 
 cJSON *cJSON_AddIntToObject(cJSON * const object, const char * const name, int number)
 {

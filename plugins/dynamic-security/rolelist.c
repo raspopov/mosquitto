@@ -10,13 +10,15 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
 
 #include "config.h"
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 #include <stdio.h>
 #include <string.h>
 #include <uthash.h>
@@ -49,7 +51,7 @@ static int rolelist_cmp(void *a, void *b)
 }
 
 
-void dynsec_rolelist__free_item(struct dynsec__rolelist **base_rolelist, struct dynsec__rolelist *rolelist)
+static void dynsec_rolelist__free_item(struct dynsec__rolelist **base_rolelist, struct dynsec__rolelist *rolelist)
 {
 	HASH_DELETE(hh, *base_rolelist, rolelist);
 	mosquitto_free(rolelist->rolename);
@@ -65,7 +67,7 @@ void dynsec_rolelist__cleanup(struct dynsec__rolelist **base_rolelist)
 	}
 }
 
-int dynsec_rolelist__remove_role(struct dynsec__rolelist **base_rolelist, const struct dynsec__role *role)
+static int dynsec_rolelist__remove_role(struct dynsec__rolelist **base_rolelist, const struct dynsec__role *role)
 {
 	struct dynsec__rolelist *found_rolelist;
 
@@ -162,7 +164,7 @@ int dynsec_rolelist__group_add(struct dynsec__group *group, struct dynsec__role 
 
 int dynsec_rolelist__load_from_json(cJSON *command, struct dynsec__rolelist **rolelist)
 {
-	cJSON *j_roles, *j_role, *j_rolename;
+	cJSON *j_roles, *j_role;
 	int priority;
 	struct dynsec__role *role;
 
@@ -170,10 +172,11 @@ int dynsec_rolelist__load_from_json(cJSON *command, struct dynsec__rolelist **ro
 	if(j_roles){
 		if(cJSON_IsArray(j_roles)){
 			cJSON_ArrayForEach(j_role, j_roles){
-				j_rolename = cJSON_GetObjectItem(j_role, "rolename");
-				if(j_rolename && cJSON_IsString(j_rolename)){
+				char *rolename;
+				json_get_string(j_role, "rolename", &rolename, false);
+				if(rolename){
 					json_get_int(j_role, "priority", &priority, true, -1);
-					role = dynsec_roles__find(j_rolename->valuestring);
+					role = dynsec_roles__find(rolename);
 					if(role){
 						dynsec_rolelist__add(rolelist, role, priority);
 					}else{

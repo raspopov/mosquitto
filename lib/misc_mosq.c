@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -20,6 +22,8 @@ Contributors:
 #include "config.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,9 +34,17 @@ Contributors:
 #  include <aclapi.h>
 #  include <io.h>
 #  include <lmcons.h>
+#  include <fcntl.h>
+#  define PATH_MAX MAX_PATH
 #else
 #  include <sys/stat.h>
+#  include <pwd.h>
+#  include <grp.h>
+#  include <unistd.h>
 #endif
+
+#include "misc_mosq.h"
+#include "logging_mosq.h"
 
 
 FILE *mosquitto__fopen(const char *path, const char *mode, bool restrict_read)
@@ -40,6 +52,8 @@ FILE *mosquitto__fopen(const char *path, const char *mode, bool restrict_read)
 #ifdef WIN32
 	char buf[4096];
 	int rc;
+	int flags = 0;
+
 	rc = ExpandEnvironmentStringsA(path, buf, 4096);
 	if(rc == 0 || rc > 4096){
 		return NULL;
@@ -53,13 +67,17 @@ FILE *mosquitto__fopen(const char *path, const char *mode, bool restrict_read)
 			DWORD ulen = UNLEN;
 			SECURITY_DESCRIPTOR sd;
 			DWORD dwCreationDisposition;
+			int fd;
+			FILE *fptr;
 
 			switch(mode[0]){
 				case 'a':
 					dwCreationDisposition = OPEN_ALWAYS;
+					flags = _O_APPEND;
 					break;
 				case 'r':
 					dwCreationDisposition = OPEN_EXISTING;
+					flags = _O_RDONLY;
 					break;
 				case 'w':
 					dwCreationDisposition = CREATE_ALWAYS;
@@ -81,6 +99,7 @@ FILE *mosquitto__fopen(const char *path, const char *mode, bool restrict_read)
 				return NULL;
 			}
 
+			memset(&sec, 0, sizeof(sec));
 			sec.nLength = sizeof(SECURITY_ATTRIBUTES);
 			sec.bInheritHandle = FALSE;
 			sec.lpSecurityDescriptor = &sd;
@@ -93,15 +112,18 @@ FILE *mosquitto__fopen(const char *path, const char *mode, bool restrict_read)
 
 			LocalFree(pacl);
 
-			int fd = _open_osfhandle((intptr_t)hfile, 0);
+			fd = _open_osfhandle((intptr_t)hfile, flags);
 			if (fd < 0) {
 				return NULL;
 			}
 
-			FILE *fptr = _fdopen(fd, mode);
+			fptr = _fdopen(fd, mode);
 			if (!fptr) {
 				_close(fd);
 				return NULL;
+			}
+			if(mode[0] == 'a'){
+				fseek(fptr, 0, SEEK_END);
 			}
 			return fptr;
 
@@ -110,18 +132,89 @@ FILE *mosquitto__fopen(const char *path, const char *mode, bool restrict_read)
 		}
 	}
 #else
+	FILE *fptr;
+	struct stat statbuf;
+
 	if (restrict_read) {
-		FILE *fptr;
 		mode_t old_mask;
 
 		old_mask = umask(0077);
 		fptr = fopen(path, mode);
 		umask(old_mask);
-
-		return fptr;
 	}else{
-		return fopen(path, mode);
+		fptr = fopen(path, mode);
 	}
+	if(!fptr) return NULL;
+
+	if(fstat(fileno(fptr), &statbuf) < 0){
+		fclose(fptr);
+		return NULL;
+	}
+
+	if(restrict_read){
+		if(statbuf.st_mode & S_IRWXO){
+#ifdef WITH_BROKER
+			log__printf(NULL, MOSQ_LOG_WARNING,
+#else
+			fprintf(stderr,
+#endif
+					"Warning: File %s has world readable permissions. Future versions will refuse to load this file.\n"
+					"To fix this, use `chmod 0700 %s`.",
+					path, path);
+#if 0
+			return NULL;
+#endif
+		}
+		if(statbuf.st_uid != getuid()){
+			char buf[4096];
+			struct passwd pw, *result;
+
+			getpwuid_r(getuid(), &pw, buf, sizeof(buf), &result);
+			if(result){
+#ifdef WITH_BROKER
+				log__printf(NULL, MOSQ_LOG_WARNING,
+#else
+				fprintf(stderr,
+#endif
+						"Warning: File %s owner is not %s. Future versions will refuse to load this file."
+						"To fix this, use `chown %s %s`.",
+						path, result->pw_name, result->pw_name, path);
+			}
+#if 0
+			// Future version
+			return NULL;
+#endif
+		}
+		if(statbuf.st_gid != getgid()){
+			char buf[4096];
+			struct group grp, *result;
+
+			getgrgid_r(getgid(), &grp, buf, sizeof(buf), &result);
+			if(result){
+#ifdef WITH_BROKER
+				log__printf(NULL, MOSQ_LOG_WARNING,
+#else
+				fprintf(stderr,
+#endif
+						"Warning: File %s group is not %s. Future versions will refuse to load this file.",
+						path, result->gr_name);
+			}
+#if 0
+			// Future version
+			return NULL
+#endif
+		}
+	}
+
+
+	if(!S_ISREG(statbuf.st_mode) && !S_ISLNK(statbuf.st_mode)){
+#ifdef WITH_BROKER
+		log__printf(NULL, MOSQ_LOG_ERR, "Error: %s is not a file.", path);
+#endif
+		fclose(fptr);
+		return NULL;
+	}
+	return fptr;
 #endif
 }
 
@@ -150,6 +243,7 @@ char *fgets_extending(char **buf, int *buflen, FILE *stream)
 	char endchar;
 	int offset = 0;
 	char *newbuf;
+	size_t len;
 
 	if(stream == NULL || buf == NULL || buflen == NULL || *buflen < 1){
 		return NULL;
@@ -157,11 +251,15 @@ char *fgets_extending(char **buf, int *buflen, FILE *stream)
 
 	do{
 		rc = fgets(&((*buf)[offset]), (*buflen)-offset, stream);
-		if(feof(stream)){
+		if(feof(stream) || rc == NULL){
 			return rc;
 		}
 
-		endchar = (*buf)[strlen(*buf)-1];
+		len = strlen(*buf);
+		if(len == 0){
+			return rc;
+		}
+		endchar = (*buf)[len-1];
 		if(endchar == '\n'){
 			return rc;
 		}

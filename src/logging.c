@@ -4,12 +4,14 @@ Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -18,16 +20,22 @@ Contributors:
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
 #ifndef WIN32
 #include <syslog.h>
 #endif
 #include <time.h>
+
+#if defined(__APPLE__)
+#  include <sys/time.h>
+#endif
 
 #ifdef WITH_DLT
 #include <sys/stat.h>
 #include <dlt/dlt.h>
 #endif
 
+#include "logging_mosq.h"
 #include "mosquitto_broker_internal.h"
 #include "memory_mosq.h"
 #include "misc_mosq.h"
@@ -122,11 +130,16 @@ int log__init(struct mosquitto__config *config)
 			log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to open log file %s for writing.", config->log_file);
 		}
 	}
+	if(log_destinations & MQTT3_LOG_STDOUT){
+		setvbuf(stdout, NULL, _IOLBF, 0);
+	}
 #ifdef WITH_DLT
-	dlt_fifo_check();
-	if(dlt_allowed){
-		DLT_REGISTER_APP("MQTT","mosquitto log");
-		dlt_register_context(&dltContext, "MQTT", "mosquitto DLT context");
+	if(log_destinations & MQTT3_LOG_DLT){
+		dlt_fifo_check();
+		if(dlt_allowed){
+			DLT_REGISTER_APP("MQTT","mosquitto log");
+			dlt_register_context(&dltContext, "MQTT", "mosquitto DLT context");
+		}
 	}
 #endif
 	return rc;
@@ -180,7 +193,7 @@ DltLogLevelType get_dlt_level(unsigned int priority)
 }
 #endif
 
-int log__vprintf(unsigned int priority, const char *fmt, va_list va)
+static int log__vprintf(unsigned int priority, const char *fmt, va_list va)
 {
 	const char *topic;
 	int syslog_priority;
@@ -284,7 +297,7 @@ int log__vprintf(unsigned int priority, const char *fmt, va_list va)
 					log_line_pos = (size_t)snprintf(log_line, sizeof(log_line), "Time error");
 				}
 			}else{
-				log_line_pos = (size_t)snprintf(log_line, sizeof(log_line), "%d", (int)db.now_real_s);
+				log_line_pos = (size_t)snprintf(log_line, sizeof(log_line), "%" PRIu64, (uint64_t)db.now_real_s);
 			}
 			if(log_line_pos < sizeof(log_line)-3){
 				log_line[log_line_pos] = ':';
@@ -361,7 +374,11 @@ void log__internal(const char *fmt, ...)
 		return;
 	}
 
+#ifdef WIN32
+	log__printf(NULL, MOSQ_LOG_INTERNAL, "%s", buf);
+#else
 	log__printf(NULL, MOSQ_LOG_INTERNAL, "%s%s%s", "\e[32m", buf, "\e[0m");
+#endif
 }
 
 int mosquitto_log_vprintf(int level, const char *fmt, va_list va)

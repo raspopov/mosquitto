@@ -4,12 +4,14 @@ Copyright (c) 2011-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -29,7 +31,7 @@ int main(int argc, char *argv[]);
 
 static void print_error(void)
 {
-	char *buf;
+	char *buf = NULL;
 
 	FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
 		NULL, GetLastError(), LANG_NEUTRAL, (LPTSTR)&buf, 0, NULL);
@@ -67,6 +69,9 @@ void __stdcall service_main(DWORD dwArgc, LPTSTR *lpszArgv)
 	int argc = 1;
 	char conf_path[MAX_PATH + 20];
 	int rc;
+
+	UNUSED(dwArgc);
+	UNUSED(lpszArgv);
 
 	service_handle = RegisterServiceCtrlHandler("mosquitto", service_handler);
 	if(service_handle){
@@ -116,7 +121,7 @@ void service_install(void)
 
 	sc_manager = OpenSCManager(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
 	if(sc_manager){
-		svc_handle = CreateService(sc_manager, "mosquitto", "Mosquitto Broker", 
+		svc_handle = CreateService(sc_manager, "mosquitto", "Mosquitto Broker",
 				SERVICE_START | SERVICE_STOP | SERVICE_CHANGE_CONFIG,
 				SERVICE_WIN32_OWN_PROCESS, SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
 				service_string, NULL, NULL, NULL, NULL, NULL);

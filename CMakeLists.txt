@@ -4,16 +4,13 @@
 # To configure the build options either use the CMake gui, or run the command
 # line utility including the "-i" option.
 
-set(CMAKE_LEGACY_CYGWIN_WIN32 0)
+cmake_minimum_required(VERSION 3.1)
+cmake_policy(SET CMP0042 NEW)
 
 project(mosquitto)
+set (VERSION 2.0.18)
 
-cmake_minimum_required(VERSION 2.8)
-# Only for version 3 and up. cmake_policy(SET CMP0042 NEW)
-
-set (VERSION 1.6.12)
-
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
+list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/")
 
 add_definitions (-DCMAKE -DVERSION=\"${VERSION}\")
 
@@ -21,6 +18,10 @@ if (WIN32)
 	add_definitions("-D_CRT_SECURE_NO_WARNINGS")
 	add_definitions("-D_CRT_NONSTDC_NO_DEPRECATE")
 endif (WIN32)
+
+if(APPLE)
+	set(CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS "${CMAKE_SHARED_LIBRARY_CREATE_C_FLAGS} -undefined dynamic_lookup")
+endif(APPLE)
 
 include(GNUInstallDirs)
 
@@ -66,12 +67,9 @@ option(WITH_THREADING "Include client library threading support?" ON)
 if (WITH_THREADING)
 	add_definitions("-DWITH_THREADING")
 	if (WIN32)
-		if (CMAKE_CL_64)
-			set (PTHREAD_LIBRARIES C:\\pthreads\\Pre-built.2\\lib\\x64\\pthreadVC2.lib)
-		else (CMAKE_CL_64)
-			set (PTHREAD_LIBRARIES C:\\pthreads\\Pre-built.2\\lib\\x86\\pthreadVC2.lib)
-		endif (CMAKE_CL_64)
-		set (PTHREAD_INCLUDE_DIR C:\\pthreads\\Pre-built.2\\include)
+		find_package(Threads REQUIRED)
+		set (PTHREAD_LIBRARIES Threads::Threads)
+		set (PTHREAD_INCLUDE_DIR "")
 	elseif (ANDROID)
 		set (PTHREAD_LIBRARIES "")
 		set (PTHREAD_INCLUDE_DIR "")
@@ -98,6 +96,16 @@ if (WITH_DLT)
 	add_definitions("-DWITH_DLT")
 endif (WITH_DLT)
 
+option(WITH_CJSON "Build with cJSON support (required for dynamic security plugin and useful for mosquitto_sub)?" ON)
+if (WITH_CJSON)
+    FIND_PACKAGE(cJSON)
+    if (CJSON_FOUND)
+	    message(STATUS ${CJSON_FOUND})
+    else (CJSON_FOUND)
+	    message(STATUS "Optional dependency cJSON not found. Some features will be disabled.")
+    endif(CJSON_FOUND)
+endif()
+
 # ========================================
 # Include projects
 # ========================================
@@ -122,11 +130,6 @@ if (WITH_APPS)
 endif (WITH_APPS)
 
 if (WITH_PLUGINS)
-	FIND_PACKAGE(cJSON)
-	if (CJSON_FOUND)
-		message(STATUS ${CJSON_FOUND})
-		add_definitions("-DWITH_CJSON")
-	endif()
 	add_subdirectory(plugins)
 endif (WITH_PLUGINS)
 

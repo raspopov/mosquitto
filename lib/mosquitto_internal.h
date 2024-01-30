@@ -4,12 +4,14 @@ Copyright (c) 2010-2020 Roger Light <roger@atchoo.org>
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
    Tatsuzo Osawa - Add epoll.
@@ -69,6 +71,8 @@ typedef SOCKET mosq_sock_t;
 #else
 typedef int mosq_sock_t;
 #endif
+
+#define SAFE_PRINT(A) (A)?(A):"null"
 
 enum mosquitto_msg_direction {
 	mosq_md_in = 0,
@@ -188,10 +192,14 @@ struct mosquitto_msg_data{
 #ifdef WITH_BROKER
 	struct mosquitto_client_msg *inflight;
 	struct mosquitto_client_msg *queued;
-	unsigned long msg_bytes;
-	unsigned long msg_bytes12;
-	int msg_count;
-	int msg_count12;
+	long inflight_bytes;
+	long inflight_bytes12;
+	int inflight_count;
+	int inflight_count12;
+	long queued_bytes;
+	long queued_bytes12;
+	int queued_count;
+	int queued_count12;
 #else
 	struct mosquitto_message_all *inflight;
 	int queue_len;
@@ -213,6 +221,7 @@ struct mosquitto {
 #ifndef WITH_BROKER
 	mosq_sock_t sockpairR, sockpairW;
 #endif
+	uint32_t maximum_packet_size;
 #if defined(__GLIBC__) && defined(WITH_ADNS)
 	struct gaicb *adns; /* For getaddrinfo_a */
 #endif
@@ -234,12 +243,15 @@ struct mosquitto {
 	struct mosquitto__alias *aliases;
 	struct will_delay_list *will_delay_entry;
 	int alias_count;
-	uint32_t maximum_packet_size;
+	int out_packet_count;
 	uint32_t will_delay_interval;
 	time_t will_delay_time;
 #ifdef WITH_TLS
 	SSL *ssl;
 	SSL_CTX *ssl_ctx;
+#ifndef WITH_BROKER
+	SSL_CTX *user_ssl_ctx;
+#endif
 	char *tls_cafile;
 	char *tls_capath;
 	char *tls_certfile;
@@ -249,17 +261,17 @@ struct mosquitto {
 	char *tls_ciphers;
 	char *tls_psk;
 	char *tls_psk_identity;
+	char *tls_engine;
+	char *tls_engine_kpass_sha1;
+	char *tls_alpn;
 	int tls_cert_reqs;
 	bool tls_insecure;
 	bool ssl_ctx_defaults;
 	bool tls_ocsp_required;
-	char *tls_engine;
-	char *tls_engine_kpass_sha1;
+	bool tls_use_os_certs;
 	enum mosquitto__keyform tls_keyform;
-	char *tls_alpn;
 #endif
 	bool want_write;
-	bool want_connect;
 #if defined(WITH_THREADING) && !defined(WITH_BROKER)
 	pthread_mutex_t callback_mutex;
 	pthread_mutex_t log_callback_mutex;
@@ -271,10 +283,10 @@ struct mosquitto {
 	pthread_t thread_id;
 #endif
 	bool clean_start;
-	uint32_t session_expiry_interval;
 	time_t session_expiry_time;
+	uint32_t session_expiry_interval;
 #ifdef WITH_BROKER
-	bool removed_from_by_id; /* True if removed from by_id hash */
+	bool in_by_id;
 	bool is_dropping;
 	bool is_bridge;
 	struct mosquitto__bridge *bridge;
@@ -283,19 +295,14 @@ struct mosquitto {
 	struct mosquitto__acl_user *acl_list;
 	struct mosquitto__listener *listener;
 	struct mosquitto__packet *out_packet_last;
-	struct mosquitto__subhier **subs;
-	struct mosquitto__subshared_ref **shared_subs;
+	struct mosquitto__client_sub **subs;
 	char *auth_method;
 	int sub_count;
-	int shared_sub_count;
+#  ifndef WITH_EPOLL
 	int pollfd_index;
+#  endif
 #  ifdef WITH_WEBSOCKETS
-#    if defined(LWS_LIBRARY_VERSION_NUMBER)
 	struct lws *wsi;
-#    else
-	struct libwebsocket_context *ws_context;
-	struct libwebsocket *wsi;
-#    endif
 #  endif
 	bool ws_want_write;
 	bool assigned_id;
@@ -332,6 +339,7 @@ struct mosquitto {
 	unsigned int reconnect_delay;
 	unsigned int reconnect_delay_max;
 	bool reconnect_exponential_backoff;
+	bool request_disconnect;
 	char threaded;
 	struct mosquitto__packet *out_packet_last;
 	mosquitto_property *connect_properties;
@@ -339,7 +347,7 @@ struct mosquitto {
 	ares_channel achan;
 #  endif
 #endif
-	uint8_t maximum_qos;
+	uint8_t max_qos;
 	uint8_t retain_available;
 	bool tcp_nodelay;
 
@@ -348,10 +356,9 @@ struct mosquitto {
 	UT_hash_handle hh_sock;
 	struct mosquitto *for_free_next;
 	struct session_expiry_list *expiry_list_item;
+	uint16_t remote_port;
 #endif
-#ifdef WITH_EPOLL
 	uint32_t events;
-#endif
 };
 
 #define STREMPTY(str) (str[0] == '\0')
