@@ -55,6 +55,8 @@ try:
     props = mqtt5_props.gen_string_pair_prop(mqtt5_props.PROP_USER_PROPERTY, "key", "value")
     disconnect_packet = mosq_test.gen_disconnect(proto_ver=5, reason_code=0, properties=props)
     disco_test("disco len>2", disconnect_packet)
+except mosq_test.TestError:
+    pass
 finally:
     broker.terminate()
     broker.wait()
@@ -63,5 +65,4 @@ finally:
         print(stde.decode('utf-8'))
 
 if rc != 0:
-    print(test)
     exit(rc)

@@ -11,7 +11,9 @@ if sys.version < '2.7':
 def write_config(filename, port1, port2):
     with open(filename, 'w') as f:
         f.write("port %d\n" % (port2))
+        f.write("allow_anonymous true\n")
         f.write("listener %d\n" % (port1))
+        f.write("allow_anonymous true\n")
         f.write("cafile ../ssl/all-ca.crt\n")
         f.write("certfile ../ssl/server.crt\n")
         f.write("keyfile ../ssl/server.key\n")
@@ -30,7 +32,9 @@ broker = mosq_test.start_broker(filename=os.path.basename(__file__), port=port2,
 
 try:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    ssock = ssl.wrap_socket(sock, ca_certs="../ssl/test-root-ca.crt", certfile="../ssl/client.crt", keyfile="../ssl/client.key", cert_reqs=ssl.CERT_REQUIRED)
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile="../ssl/test-root-ca.crt")
+    context.load_cert_chain(certfile="../ssl/client.crt", keyfile="../ssl/client.key")
+    ssock = context.wrap_socket(sock, server_hostname="localhost")
     ssock.settimeout(20)
     ssock.connect(("localhost", port1))
 
@@ -39,6 +43,8 @@ try:
     rc = 0
 
     ssock.close()
+except mosq_test.TestError:
+    pass
 finally:
     os.remove(conf_file)
     broker.terminate()

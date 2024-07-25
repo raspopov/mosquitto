@@ -1,3 +1,4 @@
+# .gitignore
 *.db
 *.gcda
 *.gcno
@@ -15,7 +16,12 @@ vglog*
 c/*.test
 cpp/*.test
 
+apps/db_dump/mosquitto_db_dump
+apps/mosquitto_ctrl/mosquitto_ctrl
+apps/mosquitto_passwd/mosquitto_passwd
+
 build/
+build64/
 
 client/mosquitto_pub
 client/mosquitto_rr
@@ -41,6 +47,8 @@ man/mosquitto.8
 man/mosquitto-tls.7
 man/mosquitto.conf.5
 man/libmosquitto.3
+man/mosquitto_ctrl.1
+man/mosquitto_ctrl_dynsec.1
 man/mosquitto_passwd.1
 man/mosquitto_pub.1
 man/mosquitto_rr.1
@@ -49,9 +57,7 @@ man/mqtt.7
 
 out/
 
-src/db_dump/mosquitto_db_dump
 src/mosquitto
-src/mosquitto_passwd
 
 test/broker/broker.pid
 test/test_client
@@ -70,11 +76,31 @@ test/ssl/signingCA/
 test/lib/c/*.test
 test/lib/cpp/*.test
 
+test/unit/bridge_topic_test
 test/unit/coverage.info
 test/unit/mosq_test
 test/unit/persist_read_test
 test/unit/persist_write_test
+test/unit/subs_test
+test/unit/tls_test
 test/unit/out/
 
 www/cache/
 __pycache__
+
+# Debian generated files
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/*.log
+debian/*.substvars
+debian/*mosquitto*/
+debian/*.debhelper
+debian/tmp/
+obj-*/
+
+# Emacs generated files
+*~
+
+# Others
+tmp/

@@ -5,6 +5,7 @@ from mosq_test_helper import *
 def write_config(filename, port1, port2):
     with open(filename, 'w') as f:
         f.write("port %d\n" % (port2))
+        f.write("allow_anonymous true\n")
         f.write("\n")
         f.write("connection bridge_test\n")
         f.write("address 127.0.0.1:%d\n" % (port1))
@@ -33,7 +34,9 @@ publish_packet = mosq_test.gen_publish("bridge/ssl/test", qos=0, payload="messag
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-ssock = ssl.wrap_socket(sock, ca_certs="../ssl/all-ca.crt", keyfile="../ssl/server.key", certfile="../ssl/server.crt", server_side=True)
+context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH, cafile="../ssl/all-ca.crt")
+context.load_cert_chain(certfile="../ssl/server.crt", keyfile="../ssl/server.key")
+ssock = context.wrap_socket(sock, server_side=True)
 ssock.settimeout(20)
 ssock.bind(('', port1))
 ssock.listen(5)
@@ -44,20 +47,22 @@ try:
     (bridge, address) = ssock.accept()
     bridge.settimeout(20)
 
-    if mosq_test.expect_packet(bridge, "connect", connect_packet):
-        bridge.send(connack_packet)
+    mosq_test.expect_packet(bridge, "connect", connect_packet)
+    bridge.send(connack_packet)
 
-        if mosq_test.expect_packet(bridge, "subscribe", subscribe_packet):
-            bridge.send(suback_packet)
+    mosq_test.expect_packet(bridge, "subscribe", subscribe_packet)
+    bridge.send(suback_packet)
 
-            pub = subprocess.Popen(['./08-ssl-bridge-helper.py', str(port2)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            pub.wait()
-            (stdo, stde) = pub.communicate()
+    pub = subprocess.Popen(['./08-ssl-bridge-helper.py', str(port2)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    pub.wait()
+    (stdo, stde) = pub.communicate()
 
-            if mosq_test.expect_packet(bridge, "publish", publish_packet):
-                rc = 0
+    mosq_test.expect_packet(bridge, "publish", publish_packet)
+    rc = 0
 
     bridge.close()
+except mosq_test.TestError:
+    pass
 finally:
     os.remove(conf_file)
     try:

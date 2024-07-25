@@ -7,7 +7,7 @@
 
 int mosquitto_auth_plugin_version(void)
 {
-	return MOSQ_AUTH_PLUGIN_VERSION;
+	return 4;
 }
 
 int mosquitto_auth_plugin_init(void **user_data, struct mosquitto_opt *auth_opts, int auth_opt_count)
@@ -60,7 +60,7 @@ int mosquitto_auth_acl_check(void *user_data, int access, struct mosquitto *clie
 		abort();
 		return MOSQ_ERR_ACL_DENIED;
 	}
-	
+
 	return MOSQ_ERR_SUCCESS;
 }
 

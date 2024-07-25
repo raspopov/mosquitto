@@ -1,4 +1,5 @@
 include_directories(${mosquitto_SOURCE_DIR}/lib ${mosquitto_SOURCE_DIR}/lib/cpp
+			${mosquitto_SOURCE_DIR}/include
 			${STDBOOL_H_PATH} ${STDINT_H_PATH})
 link_directories(${mosquitto_BINARY_DIR}/lib)
 
@@ -13,7 +14,10 @@ set_target_properties(mosquittopp PROPERTIES
 	VERSION ${VERSION}
 	SOVERSION 1
 )
-install(TARGETS mosquittopp RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+install(TARGETS mosquittopp
+	RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+	ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+	LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
 
 if (WITH_STATIC_LIBRARIES)
 	add_library(mosquittopp_static STATIC

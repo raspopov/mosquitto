@@ -2,13 +2,15 @@
 Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
-are made available under the terms of the Eclipse Public License v1.0
+are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
 
 The Eclipse Public License is available at
-   http://www.eclipse.org/legal/epl-v10.html
+   https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
 
 Contributors:
    Roger Light - initial implementation and documentation.
@@ -30,7 +32,7 @@ Contributors:
 
 static void connack_callback(struct mosquitto *mosq, uint8_t reason_code, uint8_t connect_flags, const mosquitto_property *properties)
 {
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s received CONNACK (%d)", mosq->id, reason_code);
+	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s received CONNACK (%d)", SAFE_PRINT(mosq->id), reason_code);
 	if(reason_code == MQTT_RC_SUCCESS){
 		mosq->reconnects = 0;
 	}
@@ -63,6 +65,10 @@ int handle__connack(struct mosquitto *mosq)
 	char *clientid = NULL;
 
 	assert(mosq);
+	if(mosq->in_packet.command != CMD_CONNACK){
+		return MOSQ_ERR_MALFORMED_PACKET;
+	}
+
 	rc = packet__read_byte(&mosq->in_packet, &connect_flags);
 	if(rc) return rc;
 	rc = packet__read_byte(&mosq->in_packet, &reason_code);
@@ -97,12 +103,14 @@ int handle__connack(struct mosquitto *mosq)
 		}
 	}
 
-	mosquitto_property_read_byte(properties, MQTT_PROP_MAXIMUM_QOS, &mosq->maximum_qos, false);
+	mosquitto_property_read_byte(properties, MQTT_PROP_RETAIN_AVAILABLE, &mosq->retain_available, false);
+	mosquitto_property_read_byte(properties, MQTT_PROP_MAXIMUM_QOS, &mosq->max_qos, false);
 	mosquitto_property_read_int16(properties, MQTT_PROP_RECEIVE_MAXIMUM, &mosq->msgs_out.inflight_maximum, false);
 	mosquitto_property_read_int16(properties, MQTT_PROP_SERVER_KEEP_ALIVE, &mosq->keepalive, false);
 	mosquitto_property_read_int32(properties, MQTT_PROP_MAXIMUM_PACKET_SIZE, &mosq->maximum_packet_size, false);
 
 	mosq->msgs_out.inflight_quota = mosq->msgs_out.inflight_maximum;
+	message__reconnect_reset(mosq, true);
 
 	connack_callback(mosq, reason_code, connect_flags, properties);
 	mosquitto_property_free_all(&properties);

@@ -39,6 +39,9 @@ int main(int argc, char *argv[])
 	mosquitto_lib_init();
 
 	mosq = mosquitto_new("subscribe-qos1-test", true, NULL);
+	if(mosq == NULL){
+		return 1;
+	}
 	mosquitto_connect_callback_set(mosq, on_connect);
 	mosquitto_disconnect_callback_set(mosq, on_disconnect);
 	mosquitto_subscribe_callback_set(mosq, on_subscribe);
@@ -52,7 +55,7 @@ int main(int argc, char *argv[])
 	if(rc){
 		printf("loop_start failed: %s\n", mosquitto_strerror(rc));
 	}
-	
+
 	/* 50 millis to be system polite */
 	struct timespec tv = { 0, 50e6 };
 	while(should_run){
@@ -61,6 +64,7 @@ int main(int argc, char *argv[])
 
 	mosquitto_disconnect(mosq);
 	mosquitto_loop_stop(mosq, false);
+	mosquitto_destroy(mosq);
 
 	mosquitto_lib_cleanup();
 	return run;

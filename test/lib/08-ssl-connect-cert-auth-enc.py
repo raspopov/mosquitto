@@ -26,9 +26,10 @@ disconnect_packet = mosq_test.gen_disconnect()
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-ssock = ssl.wrap_socket(sock, ca_certs="../ssl/all-ca.crt",
-        keyfile="../ssl/server.key", certfile="../ssl/server.crt",
-        server_side=True, cert_reqs=ssl.CERT_REQUIRED)
+context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH, cafile="../ssl/all-ca.crt")
+context.load_cert_chain(certfile="../ssl/server.crt", keyfile="../ssl/server.key")
+context.verify_mode = ssl.CERT_REQUIRED
+ssock = context.wrap_socket(sock, server_side=True)
 ssock.settimeout(10)
 ssock.bind(('', port))
 ssock.listen(5)
@@ -47,13 +48,13 @@ try:
     (conn, address) = ssock.accept()
     conn.settimeout(10)
 
-    if mosq_test.expect_packet(conn, "connect", connect_packet):
-        conn.send(connack_packet)
-
-        if mosq_test.expect_packet(conn, "disconnect", disconnect_packet):
-            rc = 0
+    mosq_test.do_receive_send(conn, connect_packet, connack_packet, "connect")
+    mosq_test.expect_packet(conn, "disconnect", disconnect_packet)
+    rc = 0
 
     conn.close()
+except mosq_test.TestError:
+    pass
 finally:
     client.terminate()
     client.wait()
