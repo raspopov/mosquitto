@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2021 Roger Light <roger@atchoo.org>
 Copyright (c) 2017 Bayerische Motoren Werke Aktiengesellschaft (BMW AG), Dr. Lars Voelker <lars.voelker@bmw.de>
 
 All rights reserved. This program and the accompanying materials
@@ -10,6 +10,8 @@ The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
 
 Contributors:
    Dr. Lars Voelker, BMW AG
@@ -62,8 +64,11 @@ int mosquitto__verify_ocsp_status_cb(SSL * ssl, void *arg)
 	OCSP_BASICRESP *br = NULL;
 	X509_STORE     *st = NULL;
 	STACK_OF(X509) *ch = NULL;
+	long len;
 
-	long len = SSL_get_tlsext_status_ocsp_resp(mosq->ssl, &p);
+	UNUSED(ssl);
+
+	len = SSL_get_tlsext_status_ocsp_resp(mosq->ssl, &p);
 	log__printf(mosq, MOSQ_LOG_DEBUG, "OCSP: SSL_get_tlsext_status_ocsp_resp returned %ld bytes", len);
 
 	/* the following functions expect a const pointer */

@@ -1,9 +1,10 @@
 DIRS= \
 		dynamic-security \
-		message-timestamp \
-		payload-modification
+		examples \
+		persist-sqlite \
+		sparkplug-aware
 
-.PHONY : all binary check clean reallyclean test install uninstall
+.PHONY : all binary check clean reallyclean test test-compile install uninstall
 
 all :
 	set -e; for d in ${DIRS}; do $(MAKE) -C $${d}; done
@@ -15,6 +16,9 @@ clean :
 	set -e; for d in ${DIRS}; do $(MAKE) -C $${d} $@; done
 
 reallyclean :
+	set -e; for d in ${DIRS}; do $(MAKE) -C $${d} $@; done
+
+test-compile :
 	set -e; for d in ${DIRS}; do $(MAKE) -C $${d} $@; done
 
 check : test

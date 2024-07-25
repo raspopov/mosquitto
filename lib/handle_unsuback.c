@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
@@ -9,6 +9,8 @@ The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
 
 Contributors:
    Roger Light - initial implementation and documentation.
@@ -24,11 +26,11 @@ Contributors:
 #  include "mosquitto_broker_internal.h"
 #endif
 
+#include "callbacks.h"
 #include "mosquitto.h"
 #include "logging_mosq.h"
-#include "memory_mosq.h"
 #include "messages_mosq.h"
-#include "mqtt_protocol.h"
+#include "mosquitto/mqtt_protocol.h"
 #include "net_mosq.h"
 #include "packet_mosq.h"
 #include "property_mosq.h"
@@ -42,19 +44,26 @@ int handle__unsuback(struct mosquitto *mosq)
 	uint16_t mid;
 	int rc;
 	mosquitto_property *properties = NULL;
-	int state;
+	int *reason_codes = NULL;
+	int reason_code_count = 0;
 
 	assert(mosq);
 
-	state = mosquitto__get_state(mosq);
-	if(state != mosq_cs_active){
+	if(mosquitto__get_state(mosq) != mosq_cs_active){
 		return MOSQ_ERR_PROTOCOL;
+	}
+	if(mosq->in_packet.command != CMD_UNSUBACK){
+		return MOSQ_ERR_MALFORMED_PACKET;
 	}
 
 #ifdef WITH_BROKER
-	log__printf(NULL, MOSQ_LOG_DEBUG, "Received UNSUBACK from %s", mosq->id);
+	if(mosq->bridge == NULL){
+		/* Client is not a bridge, so shouldn't be sending SUBACK */
+		return MOSQ_ERR_PROTOCOL;
+	}
+	log__printf(NULL, MOSQ_LOG_DEBUG, "Received UNSUBACK from %s", SAFE_PRINT(mosq->id));
 #else
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s received UNSUBACK", mosq->id);
+	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s received UNSUBACK", SAFE_PRINT(mosq->id));
 #endif
 	rc = packet__read_uint16(&mosq->in_packet, &mid);
 	if(rc) return rc;
@@ -63,26 +72,30 @@ int handle__unsuback(struct mosquitto *mosq)
 	if(mosq->protocol == mosq_p_mqtt5){
 		rc = property__read_all(CMD_UNSUBACK, &mosq->in_packet, &properties);
 		if(rc) return rc;
+
+		uint8_t byte;
+		reason_code_count = (int)(mosq->in_packet.remaining_length - mosq->in_packet.pos);
+		reason_codes = mosquitto_malloc((size_t)reason_code_count*sizeof(int));
+		if(!reason_codes){
+			mosquitto_property_free_all(&properties);
+			return MOSQ_ERR_NOMEM;
+		}
+		for(int i=0; i<reason_code_count; i++){
+			rc = packet__read_byte(&mosq->in_packet, &byte);
+			if(rc){
+				mosquitto_FREE(reason_codes);
+				mosquitto_property_free_all(&properties);
+				return rc;
+			}
+			reason_codes[i] = (int)byte;
+		}
 	}
 
-#ifdef WITH_BROKER
-	/* Immediately free, we don't do anything with Reason String or User Property at the moment */
-	mosquitto_property_free_all(&properties);
-#else
-	pthread_mutex_lock(&mosq->callback_mutex);
-	if(mosq->on_unsubscribe){
-		mosq->in_callback = true;
-		mosq->on_unsubscribe(mosq, mosq->userdata, mid);
-		mosq->in_callback = false;
-	}
-	if(mosq->on_unsubscribe_v5){
-		mosq->in_callback = true;
-		mosq->on_unsubscribe_v5(mosq, mosq->userdata, mid, properties);
-		mosq->in_callback = false;
-	}
-	pthread_mutex_unlock(&mosq->callback_mutex);
-	mosquitto_property_free_all(&properties);
+#ifndef WITH_BROKER
+	callback__on_unsubscribe(mosq, mid, reason_code_count, reason_codes, properties);
 #endif
+	mosquitto_property_free_all(&properties);
+	mosquitto_FREE(reason_codes);
 
 	return MOSQ_ERR_SUCCESS;
 }

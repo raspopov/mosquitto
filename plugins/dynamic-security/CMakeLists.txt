@@ -1,36 +1,43 @@
-if (CJSON_FOUND AND WITH_TLS)
-	set( CLIENT_INC ${mosquitto_SOURCE_DIR} ${mosquitto_SOURCE_DIR}/include
-		${STDBOOL_H_PATH} ${STDINT_H_PATH} ${PTHREAD_INCLUDE_DIR}
-		${OPENSSL_INCLUDE_DIR} ${mosquitto_SOURCE_DIR}/deps
-		${mosquitto_SOURCE_DIR}/src
-		${CJSON_INCLUDE_DIRS} )
+if(WITH_TLS)
+	set(PLUGIN_NAME mosquitto_dynamic_security)
 
-	set( CLIENT_DIR ${mosquitto_BINARY_DIR}/lib ${CJSON_DIR})
-
-	include_directories(${CLIENT_INC})
-	link_directories(${CLIENT_DIR})
-
-	add_library(mosquitto_dynamic_security SHARED
+	set(SRCLIST
 		acl.c
 		auth.c
 		clients.c
 		clientlist.c
+		config.c
+		config_init.c
+		control.c
+		default_acl.c
 		dynamic_security.h
 		groups.c
 		grouplist.c
-		json_help.c
-		json_help.h
+		../../common/json_help.c ../../common/json_help.h
+		kicklist.c
 		plugin.c
 		roles.c
 		rolelist.c
-		sub_matches_sub.c)
-
-	set_target_properties(mosquitto_dynamic_security PROPERTIES
-		POSITION_INDEPENDENT_CODE 1
+		tick.c
 	)
-	set_target_properties(mosquitto_dynamic_security PROPERTIES PREFIX "")
 
-	target_link_libraries(mosquitto_dynamic_security ${CJSON_LIBRARIES})
+	set(INCLIST
+		"${CJSON_INCLUDE_DIRS}"
+		"${mosquitto_SOURCE_DIR}/lib"
+		"${mosquitto_SOURCE_DIR}/src"
+	)
 
-	install(TARGETS mosquitto_dynamic_security RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+	set(LINKLIST
+		libmosquitto_common
+		cJSON
+		OpenSSL::SSL
+	)
+
+	if(ARGON2_FOUND)
+		set(LINKLIST
+			"${LINKLIST}"
+			argon2
+		)
+	endif()
+	add_mosquitto_plugin("${PLUGIN_NAME}" "${SRCLIST}" "${INCLIST}" "${LINKLIST}")
 endif()

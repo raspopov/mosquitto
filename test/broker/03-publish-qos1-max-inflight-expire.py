@@ -7,16 +7,15 @@ from mosq_test_helper import *
 
 def write_config(filename, port):
     with open(filename, 'w') as f:
-        f.write("port %d\n" % (port))
+        f.write("listener %d\n" % (port))
         f.write("allow_anonymous true\n")
         f.write("max_inflight_messages 1\n")
 
 def do_test(proto_ver):
     rc = 1
-    keepalive = 60
-    
+
     properties = mqtt5_props.gen_uint32_prop(mqtt5_props.PROP_SESSION_EXPIRY_INTERVAL, 1000)
-    sub_connect_packet = mosq_test.gen_connect("sub", keepalive=keepalive, properties=properties, proto_ver=proto_ver, clean_session=False)
+    sub_connect_packet = mosq_test.gen_connect("sub", properties=properties, proto_ver=proto_ver, clean_session=False)
 
     properties = mqtt5_props.gen_uint16_prop(mqtt5_props.PROP_TOPIC_ALIAS_MAXIMUM, 10) \
         + mqtt5_props.gen_uint16_prop(mqtt5_props.PROP_RECEIVE_MAXIMUM, 1)
@@ -27,7 +26,7 @@ def do_test(proto_ver):
     subscribe_packet = mosq_test.gen_subscribe(mid, "pub/qos1/test", 1, proto_ver=proto_ver)
     suback_packet = mosq_test.gen_suback(mid, 1, proto_ver=proto_ver)
 
-    connect_packet = mosq_test.gen_connect("pub-qos1-test", keepalive=keepalive, proto_ver=proto_ver)
+    connect_packet = mosq_test.gen_connect("pub-qos1-test", proto_ver=proto_ver)
     properties = mqtt5_props.gen_uint16_prop(mqtt5_props.PROP_TOPIC_ALIAS_MAXIMUM, 10) \
         + mqtt5_props.gen_uint16_prop(mqtt5_props.PROP_RECEIVE_MAXIMUM, 1)
     connack_packet = mosq_test.gen_connack(rc=0, proto_ver=proto_ver, properties=properties, property_helper=False)
@@ -61,7 +60,7 @@ def do_test(proto_ver):
         #mosq_test.expect_packet(sub_sock, "publish 2", r_publish_packet)
         #sub_sock.send(r_puback_packet)
 
-        # 
+        #
         mid = 1
         s_publish_packet = mosq_test.gen_publish("pub/qos1/test", qos=1, mid=mid, payload="message2", proto_ver=proto_ver)
         s_puback_packet = mosq_test.gen_puback(mid, proto_ver=proto_ver)
@@ -81,7 +80,9 @@ def do_test(proto_ver):
     finally:
         os.remove(conf_file)
         broker.terminate()
-        broker.wait()
+        if mosq_test.wait_for_subprocess(broker):
+            print("broker not terminated")
+            if rc == 0: rc=1
         (stdo, stde) = broker.communicate()
         if rc:
             print(stde.decode('utf-8'))

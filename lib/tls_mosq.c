@@ -1,15 +1,17 @@
 /*
-Copyright (c) 2013-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2013-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -82,7 +84,7 @@ int mosquitto__server_certificate_verify(int preverify_ok, X509_STORE_CTX *ctx)
 	}
 }
 
-int mosquitto__cmp_hostname_wildcard(char *certname, const char *hostname)
+static int mosquitto__cmp_hostname_wildcard(char *certname, const char *hostname)
 {
 	size_t i;
 	size_t len;
@@ -102,6 +104,17 @@ int mosquitto__cmp_hostname_wildcard(char *certname, const char *hostname)
 				hostname += i+1;
 				break;
 			}
+		}
+		len = strlen(hostname);
+		int dotcount = 0;
+		for(i=0; i<len-1; i++){
+			if(hostname[i] == '.'){
+				dotcount++;
+			}
+		}
+		if(dotcount < 1){
+			/* Exclude e.g. *.com, allow e.g. *.example.com */
+			return 1;
 		}
 		return strcasecmp(certname, hostname);
 	}else{
@@ -139,22 +152,14 @@ int mosquitto__verify_certificate_hostname(X509 *cert, const char *hostname)
 		for(i=0; i<sk_GENERAL_NAME_num(san); i++){
 			nval = sk_GENERAL_NAME_value(san, i);
 			if(nval->type == GEN_DNS){
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-				data = ASN1_STRING_data(nval->d.dNSName);
-#else
 				data = ASN1_STRING_get0_data(nval->d.dNSName);
-#endif
 				if(data && !mosquitto__cmp_hostname_wildcard((char *)data, hostname)){
 					sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);
 					return 1;
 				}
 				have_san_dns = true;
 			}else if(nval->type == GEN_IPADD){
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-				data = ASN1_STRING_data(nval->d.iPAddress);
-#else
 				data = ASN1_STRING_get0_data(nval->d.iPAddress);
-#endif
 				if(nval->d.iPAddress->length == 4 && ipv4_ok){
 					if(!memcmp(ipv4_addr, data, 4)){
 						sk_GENERAL_NAME_pop_free(san, GENERAL_NAME_free);

@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2014-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2014-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
@@ -9,6 +9,8 @@ The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
 
 Contributors:
    Roger Light - initial implementation and documentation.
@@ -33,7 +35,6 @@ Contributors:
 #endif
 
 #include <mosquitto.h>
-#include <mqtt_protocol.h>
 #include "mosquitto_ctrl.h"
 #include "get_password.h"
 
@@ -79,6 +80,7 @@ void client_config_cleanup(struct mosq_config *cfg)
 	free(cfg->socks5_username);
 	free(cfg->socks5_password);
 #endif
+	free(cfg->data_file);
 }
 
 int ctrl_config_parse(struct mosq_config *cfg, int *argc, char **argv[])
@@ -91,6 +93,7 @@ int ctrl_config_parse(struct mosq_config *cfg, int *argc, char **argv[])
 	rc = client_config_line_proc(cfg, argc, argv);
 	if(rc) return rc;
 
+	/* Load options from config file - this must be after `-o` has been processed */
 	rc = client_config_load(cfg);
 	if(rc) return rc;
 
@@ -185,8 +188,17 @@ static int client_config_line_proc(struct mosq_config *cfg, int *argc, char **ar
 #endif
 		}else if(!strcmp(argv[0], "-d") || !strcmp(argv[0], "--debug")){
 			cfg->debug = true;
+		}else if(!strcmp(argv[0], "-f")){
+			if((*argc) == 1){
+				fprintf(stderr, "Error: -f argument given but no data file specified.\n\n");
+				return 1;
+			}else{
+				cfg->data_file = strdup(argv[1]);
+			}
+			argv++;
+			(*argc)--;
 		}else if(!strcmp(argv[0], "--help")){
-			return 2;
+			return 1;
 		}else if(!strcmp(argv[0], "-h") || !strcmp(argv[0], "--host")){
 			if((*argc) == 1){
 				fprintf(stderr, "Error: -h argument given but no host specified.\n\n");
@@ -245,7 +257,7 @@ static int client_config_line_proc(struct mosq_config *cfg, int *argc, char **ar
 					url += 8;
 					cfg->port = 8883;
 				} else {
-					fprintf(stderr, "Error: unsupported URL scheme.\n\n");
+					fprintf(stderr, "Error: Unsupported URL scheme.\n\n");
 					return 1;
 				}
 				topic = strchr(url, '/');
@@ -263,6 +275,10 @@ static int client_config_line_proc(struct mosq_config *cfg, int *argc, char **ar
 						*colon = 0;
 						cfg->password = strdup(colon + 1);
 					}
+					if(strlen(url) == 0){
+						fprintf(stderr, "Error: Empty username in URL.\n");
+						return 1;
+					}
 					cfg->username = strdup(url);
 					url = tmp;
 				}
@@ -271,6 +287,11 @@ static int client_config_line_proc(struct mosq_config *cfg, int *argc, char **ar
 				tmp = strchr(url, ':');
 				if(tmp) {
 					*tmp++ = 0;
+					if(strlen(tmp) == 0){
+						cfg->host = NULL; /* Prevent free of non-heap memory later */
+						fprintf(stderr, "Error: Empty port in URL.\n");
+						return 1;
+					}
 					cfg->port = atoi(tmp);
 				}
 				/* Now we've removed the port, time to get the host on the heap */
@@ -435,7 +456,7 @@ static int client_config_line_proc(struct mosq_config *cfg, int *argc, char **ar
 		}else if(!strcmp(argv[0], "-v") || !strcmp(argv[0], "--verbose")){
 			cfg->verbose = 1;
 		}else if(!strcmp(argv[0], "--version")){
-			return 3;
+			return 1;
 		}else{
 			goto unknown_option;
 		}
@@ -459,6 +480,7 @@ static char *get_default_cfg_location(void)
 	char *env;
 #else
 	char env[1024];
+	int rc;
 #endif
 
 #ifndef WIN32
@@ -528,7 +550,7 @@ int client_config_load(struct mosq_config *cfg)
 			fclose(fptr);
 			return 1;
 		}
-		while(fgets(line, 1024, fptr)){
+		while(fgets(line, sizeof(line), fptr)){
 			if(line[0] == '#') continue; /* Comments */
 
 			while(line[strlen(line)-1] == 10 || line[strlen(line)-1] == 13){
@@ -572,23 +594,24 @@ int client_opts_set(struct mosquitto *mosq, struct mosq_config *cfg)
 		rc = get_password(prompt, NULL, false, password, sizeof(password));
 		if(rc){
 			fprintf(stderr, "Error getting password.\n");
-			mosquitto_lib_cleanup();
 			return 1;
 		}
 		cfg->password = strdup(password);
 		if(cfg->password == NULL){
 			fprintf(stderr, "Error: Out of memory.\n");
-			mosquitto_lib_cleanup();
 			return 1;
 		}
 	}
 
 	if((cfg->username || cfg->password) && mosquitto_username_pw_set(mosq, cfg->username, cfg->password)){
 		fprintf(stderr, "Error: Problem setting username and/or password.\n");
-		mosquitto_lib_cleanup();
 		return 1;
 	}
 #ifdef WITH_TLS
+	if(cfg->keyform && mosquitto_string_option(mosq, MOSQ_OPT_TLS_KEYFORM, cfg->keyform)){
+		fprintf(stderr, "Error: Problem setting key form, it must be one of 'pem' or 'engine'.\n");
+		return 1;
+	}
 	if(cfg->cafile || cfg->capath){
 		rc = mosquitto_tls_set(mosq, cfg->cafile, cfg->capath, cfg->certfile, cfg->keyfile, NULL);
 		if(rc){
@@ -597,45 +620,30 @@ int client_opts_set(struct mosquitto *mosq, struct mosq_config *cfg)
 			}else{
 				fprintf(stderr, "Error: Problem setting TLS options: %s.\n", mosquitto_strerror(rc));
 			}
-			mosquitto_lib_cleanup();
 			return 1;
 		}
 	}
-	if(cfg->insecure && mosquitto_tls_insecure_set(mosq, true)){
-		fprintf(stderr, "Error: Problem setting TLS insecure option.\n");
-		mosquitto_lib_cleanup();
-		return 1;
-	}
+	mosquitto_tls_insecure_set(mosq, cfg->insecure);
 	if(cfg->tls_engine && mosquitto_string_option(mosq, MOSQ_OPT_TLS_ENGINE, cfg->tls_engine)){
 		fprintf(stderr, "Error: Problem setting TLS engine, is %s a valid engine?\n", cfg->tls_engine);
-		mosquitto_lib_cleanup();
-		return 1;
-	}
-	if(cfg->keyform && mosquitto_string_option(mosq, MOSQ_OPT_TLS_KEYFORM, cfg->keyform)){
-		fprintf(stderr, "Error: Problem setting key form, it must be one of 'pem' or 'engine'.\n");
-		mosquitto_lib_cleanup();
 		return 1;
 	}
 	if(cfg->tls_engine_kpass_sha1 && mosquitto_string_option(mosq, MOSQ_OPT_TLS_ENGINE_KPASS_SHA1, cfg->tls_engine_kpass_sha1)){
 		fprintf(stderr, "Error: Problem setting TLS engine key pass sha, is it a 40 character hex string?\n");
-		mosquitto_lib_cleanup();
 		return 1;
 	}
 	if(cfg->tls_alpn && mosquitto_string_option(mosq, MOSQ_OPT_TLS_ALPN, cfg->tls_alpn)){
 		fprintf(stderr, "Error: Problem setting TLS ALPN protocol.\n");
-		mosquitto_lib_cleanup();
 		return 1;
 	}
 #  ifdef FINAL_WITH_TLS_PSK
 	if(cfg->psk && mosquitto_tls_psk_set(mosq, cfg->psk, cfg->psk_identity, NULL)){
 		fprintf(stderr, "Error: Problem setting TLS-PSK options.\n");
-		mosquitto_lib_cleanup();
 		return 1;
 	}
 #  endif
 	if((cfg->tls_version || cfg->ciphers) && mosquitto_tls_opts_set(mosq, 1, cfg->tls_version, cfg->ciphers)){
 		fprintf(stderr, "Error: Problem setting TLS options, check the options are valid.\n");
-		mosquitto_lib_cleanup();
 		return 1;
 	}
 #endif
@@ -643,7 +651,6 @@ int client_opts_set(struct mosquitto *mosq, struct mosq_config *cfg)
 	if(cfg->socks5_host){
 		rc = mosquitto_socks5_set(mosq, cfg->socks5_host, cfg->socks5_port, cfg->socks5_username, cfg->socks5_password);
 		if(rc){
-			mosquitto_lib_cleanup();
 			return rc;
 		}
 	}
@@ -687,11 +694,10 @@ int client_connect(struct mosquitto *mosq, struct mosq_config *cfg)
 #else
 			FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM, NULL, errno, 0, (LPTSTR)&err, 1024, NULL);
 #endif
-			fprintf(stderr, "Error: %s\n", err);
+			fprintf(stderr, "Error: %s.\n", err);
 		}else{
 			fprintf(stderr, "Unable to connect (%s).\n", mosquitto_strerror(rc));
 		}
-		mosquitto_lib_cleanup();
 		return rc;
 	}
 	return MOSQ_ERR_SUCCESS;
@@ -701,7 +707,7 @@ int client_connect(struct mosquitto *mosq, struct mosq_config *cfg)
 /* Convert %25 -> %, %3a, %3A -> :, %40 -> @ */
 static int mosquitto__urldecode(char *str)
 {
-	int i, j;
+	size_t i, j;
 	size_t len;
 	if(!str) return 0;
 
@@ -884,9 +890,11 @@ static int mosquitto__parse_socks_url(struct mosq_config *cfg, char *url)
 	}
 
 	if(mosquitto__urldecode(username)){
+		fprintf(stderr, "Error: Invalid URL encoding in username.\n");
 		goto cleanup;
 	}
 	if(mosquitto__urldecode(password)){
+		fprintf(stderr, "Error: Invalid URL encoding in password.\n");
 		goto cleanup;
 	}
 	if(port){

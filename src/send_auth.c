@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2019-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2019-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
@@ -10,6 +10,8 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -17,10 +19,10 @@ Contributors:
 #include "config.h"
 
 #include "mosquitto_broker_internal.h"
-#include "mqtt_protocol.h"
-#include "memory_mosq.h"
+#include "mosquitto/mqtt_protocol.h"
 #include "packet_mosq.h"
 #include "property_mosq.h"
+#include "sys_tree.h"
 #include "util_mosq.h"
 
 int send__auth(struct mosquitto *context, uint8_t reason_code, const void *auth_data, uint16_t auth_data_len)
@@ -38,43 +40,28 @@ int send__auth(struct mosquitto *context, uint8_t reason_code, const void *auth_
 	remaining_length = 1;
 
 	rc = mosquitto_property_add_string(&properties, MQTT_PROP_AUTHENTICATION_METHOD, context->auth_method);
-	if(rc){
-		mosquitto_property_free_all(&properties);
-		return rc;
-	}
+	if(rc) goto error;
 
 	if(auth_data != NULL && auth_data_len > 0){
 		rc = mosquitto_property_add_binary(&properties, MQTT_PROP_AUTHENTICATION_DATA, auth_data, auth_data_len);
-		if(rc){
-			mosquitto_property_free_all(&properties);
-			return rc;
-		}
+		if(rc) goto error;
 	}
 
-	remaining_length += property__get_remaining_length(properties);
+	remaining_length += mosquitto_property_get_remaining_length(properties);
 
-	if(packet__check_oversize(context, remaining_length)){
-		mosquitto_property_free_all(&properties);
-		mosquitto__free(packet);
-		return MOSQ_ERR_OVERSIZE_PACKET;
-	}
+	rc = packet__check_oversize(context, remaining_length);
+	if(rc) goto error;
 
-	packet = mosquitto__calloc(1, sizeof(struct mosquitto__packet));
-	if(!packet) return MOSQ_ERR_NOMEM;
+	rc = packet__alloc(&packet, CMD_AUTH, remaining_length);
+	if(rc) goto error;
 
-	packet->command = CMD_AUTH;
-	packet->remaining_length = remaining_length;
-
-	rc = packet__alloc(packet);
-	if(rc){
-		mosquitto_property_free_all(&properties);
-		mosquitto__free(packet);
-		return rc;
-	}
 	packet__write_byte(packet, reason_code);
 	property__write_all(packet, properties, true);
 	mosquitto_property_free_all(&properties);
 
+	metrics__int_inc(mosq_counter_mqtt_auth_sent, 1);
 	return packet__queue(context, packet);
+error:
+	mosquitto_property_free_all(&properties);
+	return rc;
 }
-

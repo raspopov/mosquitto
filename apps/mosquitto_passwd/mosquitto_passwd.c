@@ -1,21 +1,24 @@
 /*
-Copyright (c) 2012-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2012-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
 
 #include "config.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -24,8 +27,8 @@ Contributors:
 #include <stdlib.h>
 #include <string.h>
 
+#include "mosquitto.h"
 #include "get_password.h"
-#include "password_mosq.h"
 
 #ifdef WIN32
 #  include <windows.h>
@@ -49,10 +52,7 @@ Contributors:
 #  include <sys/stat.h>
 #endif
 
-#define MAX_BUFFER_LEN 65536
-#define SALT_LEN 12
-
-#include "misc_mosq.h"
+#define MAX_BUFFER_LEN 65500
 
 struct cb_helper {
 	const char *line;
@@ -62,7 +62,7 @@ struct cb_helper {
 	bool found;
 };
 
-static enum mosquitto_pwhash_type hashtype = pw_sha512_pbkdf2;
+static enum mosquitto_pwhash_type hashtype = MOSQ_PW_ARGON2ID;
 
 #ifdef WIN32
 static FILE *mpw_tmpfile(void)
@@ -103,65 +103,51 @@ static FILE *mpw_tmpfile(void)
 }
 #endif
 
-
-void print_usage(void)
+static void print_usage(void)
 {
 	printf("mosquitto_passwd is a tool for managing password files for mosquitto.\n\n");
-	printf("Usage: mosquitto_passwd [-H sha512 | -H sha512-pbkdf2] [-c | -D] passwordfile username\n");
-	printf("       mosquitto_passwd [-H sha512 | -H sha512-pbkdf2] [-c] -b passwordfile username password\n");
+	printf("Usage: mosquitto_passwd [-H argon2 | -H sha512-pbkdf2] [-c | -D] passwordfile username\n");
+	printf("       mosquitto_passwd [-H argon2 | -H sha512-pbkdf2] [-c] -b passwordfile username password\n");
 	printf("       mosquitto_passwd -U passwordfile\n");
 	printf(" -b : run in batch mode to allow passing passwords on the command line.\n");
 	printf(" -c : create a new password file. This will overwrite existing files.\n");
 	printf(" -D : delete the username rather than adding/updating its password.\n");
-	printf(" -H : specify the hashing algorithm. Defaults to sha512-pbkdf2, which is recommended.\n");
+	printf(" -H : specify the hashing algorithm. Defaults to argon2, which is recommended.\n");
+	printf("      Mosquitto 2.0 and earlier defaulted to sha512-pbkdf2.\n");
 	printf("      Mosquitto 1.6 and earlier defaulted to sha512.\n");
 	printf(" -U : update a plain text password file to use hashed passwords.\n");
 	printf("\nSee https://mosquitto.org/ for more information.\n\n");
 }
 
-int output_new_password(FILE *fptr, const char *username, const char *password, int iterations)
+static int output_new_password(FILE *fptr, const char *username, const char *password, int iterations)
 {
 	int rc;
-	char *salt64 = NULL, *hash64 = NULL;
-	struct mosquitto_pw pw;
+	struct mosquitto_pw *pw;
 
 	if(password == NULL){
 		fprintf(stderr, "Error: Internal error, no password given.\n");
 		return 1;
 	}
-	memset(&pw, 0, sizeof(pw));
+	if(mosquitto_pw_new(&pw, hashtype)){
+		fprintf(stderr, "Error: Out of memory.\n");
+		return 1;
+	}
 
-	pw.hashtype = hashtype;
+	if(hashtype == MOSQ_PW_SHA512_PBKDF2 && iterations > 0){
+		mosquitto_pw_set_param(pw, MOSQ_PW_PARAM_ITERATIONS, iterations);
+	}
 
-	if(pw__hash(password, &pw, true, iterations)){
+	rc = mosquitto_pw_hash_encoded(pw, password);
+	if(rc){
+		mosquitto_pw_cleanup(pw);
 		fprintf(stderr, "Error: Unable to hash password.\n");
-		return 1;
+		return rc;
 	}
 
-	rc = base64__encode(pw.salt, sizeof(pw.salt), &salt64);
-	if(rc){
-		free(salt64);
-		fprintf(stderr, "Error: Unable to encode salt.\n");
-		return 1;
-	}
+	fprintf(fptr, "%s:%s\n", username, mosquitto_pw_get_encoded(pw));
+	mosquitto_pw_cleanup(pw);
 
-	rc = base64__encode(pw.password_hash, sizeof(pw.password_hash), &hash64);
-	if(rc){
-		free(salt64);
-		free(hash64);
-		fprintf(stderr, "Error: Unable to encode hash.\n");
-		return 1;
-	}
-
-	if(pw.hashtype == pw_sha512_pbkdf2){
-		fprintf(fptr, "%s:$%d$%d$%s$%s\n", username, hashtype, iterations, salt64, hash64);
-	}else{
-		fprintf(fptr, "%s:$%d$%s$%s\n", username, hashtype, salt64, hash64);
-	}
-	free(salt64);
-	free(hash64);
-
-	return 0;
+	return rc;
 }
 
 
@@ -190,7 +176,7 @@ static int pwfile_iterate(FILE *fptr, FILE *ftmp,
 		return 1;
 	}
 
-	while(!feof(fptr) && fgets_extending(&buf, &buflen, fptr)){
+	while(!feof(fptr) && mosquitto_fgets(&buf, &buflen, fptr)){
 		if(lbuflen != buflen){
 			free(lbuf);
 			lbuflen = buflen;
@@ -205,16 +191,14 @@ static int pwfile_iterate(FILE *fptr, FILE *ftmp,
 		line++;
 		username = strtok(buf, ":");
 		password = strtok(NULL, ":");
-		if(username == NULL || password == NULL){
-			fprintf(stderr, "Error: Corrupt password file at line %d.\n", line);
-			free(lbuf);
-			free(buf);
-			return 1;
+		if(username && password){
+			username = mosquitto_trimblanks(username);
+			password = mosquitto_trimblanks(password);
 		}
-		username = misc__trimblanks(username);
-		password = misc__trimblanks(password);
 
-		if(strlen(username) == 0 || strlen(password) == 0){
+		if(username == NULL || strlen(username) == 0
+				|| password == NULL || strlen(password) == 0){
+
 			fprintf(stderr, "Error: Corrupt password file at line %d.\n", line);
 			free(lbuf);
 			free(buf);
@@ -238,6 +222,10 @@ static int pwfile_iterate(FILE *fptr, FILE *ftmp,
  * ====================================================================== */
 static int delete_pwuser_cb(FILE *fptr, FILE *ftmp, const char *username, const char *password, const char *line, struct cb_helper *helper)
 {
+	UNUSED(fptr);
+	UNUSED(password);
+	UNUSED(line);
+
 	if(strcmp(username, helper->username)){
 		/* If this isn't the username to delete, write it to the new file */
 		fprintf(ftmp, "%s", line);
@@ -248,7 +236,7 @@ static int delete_pwuser_cb(FILE *fptr, FILE *ftmp, const char *username, const 
 	return 0;
 }
 
-int delete_pwuser(FILE *fptr, FILE *ftmp, const char *username)
+static int delete_pwuser(FILE *fptr, FILE *ftmp, const char *username)
 {
 	struct cb_helper helper;
 	int rc;
@@ -271,10 +259,17 @@ int delete_pwuser(FILE *fptr, FILE *ftmp, const char *username)
  * ====================================================================== */
 static int update_file_cb(FILE *fptr, FILE *ftmp, const char *username, const char *password, const char *line, struct cb_helper *helper)
 {
-	return output_new_password(ftmp, username, password, helper->iterations);
+	UNUSED(fptr);
+	UNUSED(line);
+
+	if(helper){
+		return output_new_password(ftmp, username, password, helper->iterations);
+	}else{
+		return output_new_password(ftmp, username, password, -1);
+	}
 }
 
-int update_file(FILE *fptr, FILE *ftmp)
+static int update_file(FILE *fptr, FILE *ftmp)
 {
 	return pwfile_iterate(fptr, ftmp, update_file_cb, NULL);
 }
@@ -287,6 +282,9 @@ static int update_pwuser_cb(FILE *fptr, FILE *ftmp, const char *username, const 
 {
 	int rc = 0;
 
+	UNUSED(fptr);
+	UNUSED(password);
+
 	if(strcmp(username, helper->username)){
 		/* If this isn't the matching user, then writing out the exiting line */
 		fprintf(ftmp, "%s", line);
@@ -298,7 +296,7 @@ static int update_pwuser_cb(FILE *fptr, FILE *ftmp, const char *username, const 
 	return rc;
 }
 
-int update_pwuser(FILE *fptr, FILE *ftmp, const char *username, const char *password, int iterations)
+static int update_pwuser(FILE *fptr, FILE *ftmp, const char *username, const char *password, int iterations)
 {
 	struct cb_helper helper;
 	int rc;
@@ -310,21 +308,23 @@ int update_pwuser(FILE *fptr, FILE *ftmp, const char *username, const char *pass
 	rc = pwfile_iterate(fptr, ftmp, update_pwuser_cb, &helper);
 
 	if(helper.found){
+		printf("Updating password for user %s\n", username);
 		return rc;
 	}else{
+		printf("Adding password for user %s\n", username);
 		return output_new_password(ftmp, username, password, iterations);
 	}
 }
 
 
-int copy_contents(FILE *src, FILE *dest)
+static int copy_contents(FILE *src, FILE *dest)
 {
 	char buf[MAX_BUFFER_LEN];
 	size_t len;
 
 	rewind(src);
 	rewind(dest);
-	
+
 #ifdef WIN32
 	_chsize(fileno(dest), 0);
 #else
@@ -344,15 +344,23 @@ int copy_contents(FILE *src, FILE *dest)
 	return 0;
 }
 
-int create_backup(const char *backup_file, FILE *fptr)
+static int create_backup(char *backup_file, FILE *fptr)
 {
 	FILE *fbackup;
 
-	fbackup = fopen(backup_file, "wt");
+#ifdef WIN32
+	fbackup = mosquitto_fopen(backup_file, "wt", true);
+#else
+	int fd;
+	umask(077);
+	fd = mkstemp(backup_file);
+	fbackup = fdopen(fd, "wt");
+#endif
 	if(!fbackup){
 		fprintf(stderr, "Error creating backup password file \"%s\", not continuing.\n", backup_file);
 		return 1;
 	}
+
 	if(copy_contents(fptr, fbackup)){
 		fprintf(stderr, "Error copying data to backup password file \"%s\", not continuing.\n", backup_file);
 		fclose(fbackup);
@@ -363,16 +371,48 @@ int create_backup(const char *backup_file, FILE *fptr)
 	return 0;
 }
 
-void handle_sigint(int signal)
+static void handle_sigint(int signal)
 {
 	get_password__reset_term();
 
 	UNUSED(signal);
 
+#ifndef WITH_FUZZING
 	exit(0);
+#endif
 }
 
+
+static bool is_username_valid(const char *username)
+{
+	size_t i;
+	size_t slen;
+
+	if(username){
+		slen = strlen(username);
+		if(slen > 65535){
+			fprintf(stderr, "Error: Username must be less than 65536 characters long.\n");
+			return false;
+		}
+		for(i=0; i<slen; i++){
+			if(iscntrl(username[i])){
+				fprintf(stderr, "Error: Username must not contain control characters.\n");
+				return false;
+			}
+		}
+		if(strchr(username, ':')){
+			fprintf(stderr, "Error: Username must not contain the ':' character.\n");
+			return false;
+		}
+	}
+	return true;
+}
+
+#ifdef WITH_FUZZING
+int mosquitto_passwd_fuzz_main(int argc, char *argv[])
+#else
 int main(int argc, char *argv[])
+#endif
 {
 	char *password_file_tmp = NULL;
 	char *password_file = NULL;
@@ -387,7 +427,7 @@ int main(int argc, char *argv[])
 	bool do_update_file = false;
 	char *backup_file;
 	int idx;
-	int iterations = PW_DEFAULT_ITERATIONS;
+	int iterations = -1;
 
 	signal(SIGINT, handle_sigint);
 	signal(SIGTERM, handle_sigint);
@@ -412,10 +452,12 @@ int main(int argc, char *argv[])
 				fprintf(stderr, "Error: -H argument given but not enough other arguments.\n");
 				return 1;
 			}
-			if(!strcmp(argv[idx+1], "sha512")){
-				hashtype = pw_sha512;
+			if(!strcmp(argv[idx+1], "argon2id")){
+				hashtype = MOSQ_PW_ARGON2ID;
 			}else if(!strcmp(argv[idx+1], "sha512-pbkdf2")){
-				hashtype = pw_sha512_pbkdf2;
+				hashtype = MOSQ_PW_SHA512_PBKDF2;
+			}else if(!strcmp(argv[idx+1], "sha512")){
+				hashtype = MOSQ_PW_SHA512;
 			}else{
 				fprintf(stderr, "Error: Unknown hash type '%s'\n", argv[idx+1]);
 				return 1;
@@ -499,7 +541,7 @@ int main(int argc, char *argv[])
 	}else if(batch_mode == true && idx+3 == argc){
 		password_file_tmp = argv[idx];
 		username = argv[idx+1];
-		password_cmd = argv[idx+1];
+		password_cmd = argv[idx+2];
 	}else if(batch_mode == false && idx+2 == argc){
 		password_file_tmp = argv[idx];
 		username = argv[idx+1];
@@ -508,15 +550,8 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	if(username){
-		if(strlen(username) > 65535){
-			fprintf(stderr, "Error: Username must be less than 65536 characters long.\n");
-			return 1;
-		}
-		if(strchr(username, ':')){
-			fprintf(stderr, "Error: Username must not contain the ':' character.\n");
-			return 1;
-		}
+	if(!is_username_valid(username)){
+		return 1;
 	}
 	if(password_cmd && strlen(password_cmd) > 65535){
 		fprintf(stderr, "Error: Password must be less than 65536 characters long.\n");
@@ -554,31 +589,33 @@ int main(int argc, char *argv[])
 			}
 			password_cmd = password;
 		}
-		fptr = fopen(password_file, "wt");
+		fptr = mosquitto_fopen(password_file, "wt", true);
 		if(!fptr){
 			fprintf(stderr, "Error: Unable to open file %s for writing. %s.\n", password_file, strerror(errno));
 			free(password_file);
 			return 1;
 		}
 		free(password_file);
+		printf("Adding password for user %s\n", username);
 		rc = output_new_password(fptr, username, password_cmd, iterations);
 		fclose(fptr);
 		return rc;
 	}else{
-		fptr = fopen(password_file, "r+t");
+		fptr = mosquitto_fopen(password_file, "r+t", true);
 		if(!fptr){
 			fprintf(stderr, "Error: Unable to open password file %s. %s.\n", password_file, strerror(errno));
 			free(password_file);
 			return 1;
 		}
 
-		backup_file = malloc((size_t)strlen(password_file)+5);
+		size_t len = strlen(password_file) + strlen(".backup.XXXXXX") + 1;
+		backup_file = malloc(len);
 		if(!backup_file){
 			fprintf(stderr, "Error: Out of memory.\n");
 			free(password_file);
 			return 1;
 		}
-		snprintf(backup_file, strlen(password_file)+5, "%s.tmp", password_file);
+		snprintf(backup_file, len, "%s.backup.XXXXXX", password_file);
 		free(password_file);
 		password_file = NULL;
 
@@ -605,15 +642,10 @@ int main(int argc, char *argv[])
 				rc = update_pwuser(fptr, ftmp, username, password_cmd, iterations);
 			}else{
 				rc = get_password("Password: ", "Reenter password: ", false, password, MAX_BUFFER_LEN);
-				if(rc){
-					fclose(fptr);
-					fclose(ftmp);
-					unlink(backup_file);
-					free(backup_file);
-					return rc;
+				if(rc == 0){
+					/* Update password for individual user */
+					rc = update_pwuser(fptr, ftmp, username, password, iterations);
 				}
-				/* Update password for individual user */
-				rc = update_pwuser(fptr, ftmp, username, password, iterations);
 			}
 		}
 		if(rc){
@@ -625,19 +657,18 @@ int main(int argc, char *argv[])
 		}
 
 		if(copy_contents(ftmp, fptr)){
-			fclose(fptr);
-			fclose(ftmp);
 			fprintf(stderr, "Error occurred updating password file.\n");
 			fprintf(stderr, "Password file may be corrupt, check the backup file: %s.\n", backup_file);
-			free(backup_file);
-			return 1;
+			rc = 1;
 		}
 		fclose(fptr);
 		fclose(ftmp);
 
-		/* Everything was ok so backup no longer needed. May contain old
-		 * passwords so shouldn't be kept around. */
-		unlink(backup_file);
+		if(rc == 0){
+			/* Everything was ok so backup no longer needed. May contain old
+			 * passwords so shouldn't be kept around. */
+			unlink(backup_file);
+		}
 		free(backup_file);
 	}
 

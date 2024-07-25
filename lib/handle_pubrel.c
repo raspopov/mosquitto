@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
@@ -9,6 +9,8 @@ The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
 
 Contributors:
    Roger Light - initial implementation and documentation.
@@ -24,11 +26,11 @@ Contributors:
 #  include "mosquitto_broker_internal.h"
 #endif
 
+#include "callbacks.h"
 #include "mosquitto.h"
 #include "logging_mosq.h"
-#include "memory_mosq.h"
 #include "messages_mosq.h"
-#include "mqtt_protocol.h"
+#include "mosquitto/mqtt_protocol.h"
 #include "net_mosq.h"
 #include "packet_mosq.h"
 #include "read_handle.h"
@@ -45,13 +47,14 @@ int handle__pubrel(struct mosquitto *mosq)
 #endif
 	int rc;
 	mosquitto_property *properties = NULL;
-	int state;
 
 	assert(mosq);
 
-	state = mosquitto__get_state(mosq);
-	if(state != mosq_cs_active){
+	if(mosquitto__get_state(mosq) != mosq_cs_active){
 		return MOSQ_ERR_PROTOCOL;
+	}
+	if(mosq->protocol != mosq_p_mqtt31 && mosq->in_packet.command != (CMD_PUBREL|2)){
+		return MOSQ_ERR_MALFORMED_PACKET;
 	}
 
 	if(mosq->protocol != mosq_p_mqtt31){
@@ -67,17 +70,25 @@ int handle__pubrel(struct mosquitto *mosq)
 		rc = packet__read_byte(&mosq->in_packet, &reason_code);
 		if(rc) return rc;
 
+		if(reason_code != MQTT_RC_SUCCESS && reason_code != MQTT_RC_PACKET_ID_NOT_FOUND){
+			return MOSQ_ERR_PROTOCOL;
+		}
+
 		if(mosq->in_packet.remaining_length > 3){
 			rc = property__read_all(CMD_PUBREL, &mosq->in_packet, &properties);
 			if(rc) return rc;
+			/* Immediately free, we don't do anything with Reason String or
+			 * User Property at the moment */
+			mosquitto_property_free_all(&properties);
 		}
 	}
 
-#ifdef WITH_BROKER
-	log__printf(NULL, MOSQ_LOG_DEBUG, "Received PUBREL from %s (Mid: %d)", mosq->id, mid);
+	if(mosq->in_packet.pos < mosq->in_packet.remaining_length){
+		return MOSQ_ERR_MALFORMED_PACKET;
+	}
 
-	/* Immediately free, we don't do anything with Reason String or User Property at the moment */
-	mosquitto_property_free_all(&properties);
+#ifdef WITH_BROKER
+	log__printf(NULL, MOSQ_LOG_DEBUG, "Received PUBREL from %s (Mid: %d)", SAFE_PRINT(mosq->id), mid);
 
 	rc = db__message_release_incoming(mosq, mid);
 	if(rc == MOSQ_ERR_NOT_FOUND){
@@ -90,7 +101,7 @@ int handle__pubrel(struct mosquitto *mosq)
 	rc = send__pubcomp(mosq, mid, NULL);
 	if(rc) return rc;
 #else
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s received PUBREL (Mid: %d)", mosq->id, mid);
+	log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s received PUBREL (Mid: %d)", SAFE_PRINT(mosq->id), mid);
 
 	rc = send__pubcomp(mosq, mid, NULL);
 	if(rc){
@@ -102,19 +113,7 @@ int handle__pubrel(struct mosquitto *mosq)
 	if(rc == MOSQ_ERR_SUCCESS){
 		/* Only pass the message on if we have removed it from the queue - this
 		 * prevents multiple callbacks for the same message. */
-		pthread_mutex_lock(&mosq->callback_mutex);
-		if(mosq->on_message){
-			mosq->in_callback = true;
-			mosq->on_message(mosq, mosq->userdata, &message->msg);
-			mosq->in_callback = false;
-		}
-		if(mosq->on_message_v5){
-			mosq->in_callback = true;
-			mosq->on_message_v5(mosq, mosq->userdata, &message->msg, message->properties);
-			mosq->in_callback = false;
-		}
-		pthread_mutex_unlock(&mosq->callback_mutex);
-		mosquitto_property_free_all(&properties);
+		callback__on_message(mosq, &message->msg, message->properties);
 		message__cleanup(&message);
 	}else if(rc == MOSQ_ERR_NOT_FOUND){
 		return MOSQ_ERR_SUCCESS;
@@ -125,4 +124,3 @@ int handle__pubrel(struct mosquitto *mosq)
 
 	return MOSQ_ERR_SUCCESS;
 }
-

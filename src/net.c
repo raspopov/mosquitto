@@ -1,15 +1,17 @@
 /*
-Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -17,24 +19,24 @@ Contributors:
 #include "config.h"
 
 #ifndef WIN32
-#include <netdb.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netinet/tcp.h>
-#include <net/if.h>
+#  include <arpa/inet.h>
+#  include <ifaddrs.h>
+#  include <netdb.h>
+#  include <netinet/tcp.h>
+#  include <strings.h>
+#  include <sys/socket.h>
+#  include <unistd.h>
 #else
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
 #endif
 
-#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #ifdef WITH_WRAP
-#include <tcpd.h>
+#  include <tcpd.h>
 #endif
 
 #ifdef HAVE_NETINET_IN_H
@@ -47,18 +49,17 @@ Contributors:
 #endif
 
 #ifdef __QNX__
-#include <net/netbyte.h>
+#  include <net/netbyte.h>
 #endif
 
 #include "mosquitto_broker_internal.h"
-#include "mqtt_protocol.h"
-#include "memory_mosq.h"
+#include "mosquitto/mqtt_protocol.h"
 #include "net_mosq.h"
 #include "util_mosq.h"
 
 #ifdef WITH_TLS
-#include "tls_mosq.h"
-#include <openssl/err.h>
+#  include "tls_mosq.h"
+#  include <openssl/err.h>
 static int tls_ex_index_context = -1;
 static int tls_ex_index_listener = -1;
 #endif
@@ -111,9 +112,6 @@ struct mosquitto *net__socket_accept(struct mosquitto__listener_sock *listensock
 	struct mosquitto *new_context;
 #ifdef WITH_TLS
 	BIO *bio;
-	int rc;
-	char ebuf[256];
-	unsigned long e;
 #endif
 #ifdef WITH_WRAP
 	struct request_info wrap_req;
@@ -147,7 +145,7 @@ struct mosquitto *net__socket_accept(struct mosquitto__listener_sock *listensock
 		return NULL;
 	}
 
-	G_SOCKET_CONNECTIONS_INC();
+	metrics__int_inc(mosq_counter_socket_connections, 1);
 
 	if(net__socket_nonblock(&new_sock)){
 		return NULL;
@@ -160,7 +158,7 @@ struct mosquitto *net__socket_accept(struct mosquitto__listener_sock *listensock
 	if(!hosts_access(&wrap_req)){
 		/* Access is denied */
 		if(db.config->connection_messages == true){
-			if(!net__socket_get_address(new_sock, address, 1024)){
+			if(!net__socket_get_address(new_sock, address, 1024, NULL)){
 				log__printf(NULL, MOSQ_LOG_NOTICE, "Client connection from %s denied access by tcpd.", address);
 			}
 		}
@@ -169,7 +167,7 @@ struct mosquitto *net__socket_accept(struct mosquitto__listener_sock *listensock
 	}
 #endif
 
-	if(db.config->set_tcp_nodelay){
+	if(db.config->set_tcp_nodelay && listensock->listener->port){
 		int flag = 1;
 #ifdef WIN32
 			if (setsockopt(new_sock, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(int)) != 0) {
@@ -180,7 +178,7 @@ struct mosquitto *net__socket_accept(struct mosquitto__listener_sock *listensock
 		}
 	}
 
-	new_context = context__init(new_sock);
+	new_context = context__init();
 	if(!new_context){
 		COMPAT_CLOSE(new_sock);
 		return NULL;
@@ -192,7 +190,41 @@ struct mosquitto *net__socket_accept(struct mosquitto__listener_sock *listensock
 	}
 	new_context->listener->client_count++;
 
-	if(new_context->listener->max_connections > 0 && new_context->listener->client_count > new_context->listener->max_connections){
+	if(new_context->listener->enable_proxy_protocol_v2){
+		if(context__init_sock(new_context, new_sock, false) != MOSQ_ERR_SUCCESS){
+			context__cleanup(new_context, true);
+			COMPAT_CLOSE(new_sock);
+			return NULL;
+		}
+		new_context->transport = mosq_t_proxy_v2;
+		new_context->proxy.cmd = -1;
+	}else{
+		if(context__init_sock(new_context, new_sock, true) != MOSQ_ERR_SUCCESS){
+			context__cleanup(new_context, true);
+			COMPAT_CLOSE(new_sock);
+			return NULL;
+		}
+		switch(new_context->listener->protocol){
+			case mp_mqtt:
+				new_context->transport = mosq_t_tcp;
+				break;
+#if defined(WITH_WEBSOCKETS) && WITH_WEBSOCKETS == WS_IS_BUILTIN
+			case mp_websockets:
+				if(http__context_init(new_context)){
+					context__cleanup(new_context, true);
+					return NULL;
+				}
+				break;
+#endif
+			default:
+				context__cleanup(new_context, true);
+				return NULL;
+		}
+	}
+
+	if((new_context->listener->max_connections > 0 && new_context->listener->client_count > new_context->listener->max_connections)
+			|| (db.config->global_max_connections > 0 && HASH_CNT(hh_sock, db.contexts_by_sock) > (unsigned int)db.config->global_max_connections)){
+
 		if(db.config->connection_messages == true){
 			log__printf(NULL, MOSQ_LOG_NOTICE, "Client connection from %s denied: max_connections exceeded.", new_context->address);
 		}
@@ -214,33 +246,19 @@ struct mosquitto *net__socket_accept(struct mosquitto__listener_sock *listensock
 		bio = BIO_new_socket(new_sock, BIO_NOCLOSE);
 		SSL_set_bio(new_context->ssl, bio, bio);
 		ERR_clear_error();
-		rc = SSL_accept(new_context->ssl);
-		if(rc != 1){
-			rc = SSL_get_error(new_context->ssl, rc);
-			if(rc == SSL_ERROR_WANT_READ){
-				/* We always want to read. */
-			}else if(rc == SSL_ERROR_WANT_WRITE){
-				new_context->want_write = true;
-			}else{
-				if(db.config->connection_messages == true){
-					e = ERR_get_error();
-					while(e){
-						log__printf(NULL, MOSQ_LOG_NOTICE,
-								"Client connection from %s failed: %s.",
-								new_context->address, ERR_error_string(e, ebuf));
-						e = ERR_get_error();
-					}
-				}
-				context__cleanup(new_context, true);
-				return NULL;
-			}
-		}
+		SSL_set_accept_state(new_context->ssl);
 	}
 #endif
 
-	if(db.config->connection_messages == true){
-		log__printf(NULL, MOSQ_LOG_NOTICE, "New connection from %s on port %d.", new_context->address, new_context->listener->port);
+	if(db.config->connection_messages == true
+			&& !new_context->listener->enable_proxy_protocol_v2){
+
+		log__printf(NULL, MOSQ_LOG_NOTICE, "New connection from %s:%d on port %d.",
+				new_context->address, new_context->remote_port, new_context->listener->port);
 	}
+
+	mux__new(new_context);
+	keepalive__add(new_context);
 
 	return new_context;
 }
@@ -248,9 +266,22 @@ struct mosquitto *net__socket_accept(struct mosquitto__listener_sock *listensock
 #ifdef WITH_TLS
 static int client_certificate_verify(int preverify_ok, X509_STORE_CTX *ctx)
 {
-	UNUSED(ctx);
-
 	/* Preverify should check expiry, revocation. */
+	if(preverify_ok == 0){
+		SSL *ssl;
+		ssl = X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+		if(ssl){
+			struct mosquitto__listener *listener;
+			listener = SSL_get_ex_data(ssl, tls_ex_index_listener);
+
+			if(listener && listener->disable_client_cert_date_checks){
+				int err = X509_STORE_CTX_get_error(ctx);
+				if(err == X509_V_ERR_CERT_NOT_YET_VALID || err == X509_V_ERR_CERT_HAS_EXPIRED){
+					preverify_ok = 1;
+				}
+			}
+		}
+	}
 	return preverify_ok;
 }
 #endif
@@ -276,71 +307,112 @@ static unsigned int psk_server_callback(SSL *ssl, const char *identity, unsigned
 
 	/* The hex to BN conversion results in the length halving, so we can pass
 	 * max_psk_len*2 as the max hex key here. */
-	psk_key = mosquitto__calloc(1, max_psk_len*2 + 1);
+	psk_key = mosquitto_calloc(1, (size_t)max_psk_len*2 + 1);
 	if(!psk_key) return 0;
 
 	if(mosquitto_psk_key_get(context, psk_hint, identity, psk_key, (int)max_psk_len*2) != MOSQ_ERR_SUCCESS){
-		mosquitto__free(psk_key);
+		mosquitto_FREE(psk_key);
 		return 0;
 	}
 
 	len = mosquitto__hex2bin(psk_key, psk, (int)max_psk_len);
 	if (len < 0){
-		mosquitto__free(psk_key);
+		mosquitto_FREE(psk_key);
 		return 0;
 	}
 
 	if(listener->use_identity_as_username){
-		context->username = mosquitto__strdup(identity);
+		if(mosquitto_validate_utf8(identity, (int)strlen(identity))){
+			mosquitto_free(psk_key);
+			return 0;
+		}
+		context->username = mosquitto_strdup(identity);
 		if(!context->username){
-			mosquitto__free(psk_key);
+			mosquitto_FREE(psk_key);
 			return 0;
 		}
 	}
 
-	mosquitto__free(psk_key);
+	mosquitto_FREE(psk_key);
 	return (unsigned int)len;
 }
 #endif
 
 #ifdef WITH_TLS
+static void tls_keylog_callback(const SSL *ssl, const char *line)
+{
+	UNUSED(ssl);
+
+	if(db.tls_keylog){
+		FILE *fptr;
+		fptr = mosquitto_fopen(db.tls_keylog, "at", true);
+		if(fptr){
+#ifndef WIN32
+			/* Until mosquitto_fopen enforces file permissions on all files,
+			 * enforce it here. We can enforce it here, because it isn't a
+			 * change of behaviour. */
+			struct stat statbuf;
+			if(fstat(fileno(fptr), &statbuf) < 0
+					|| statbuf.st_mode & (S_IRWXG | S_IRWXO)){
+
+				fclose(fptr);
+				return;
+			}
+#endif
+			fprintf(fptr, "%s\n", line);
+			fclose(fptr);
+		}else{
+#ifndef WIN32
+			if(errno == ELOOP){
+				log__printf(NULL, MOSQ_LOG_INFO, "Error: keylog file must not be a symbolic link");
+			}else
+#endif
+			{
+				log__printf(NULL, MOSQ_LOG_INFO, "Error: Unable to open keylog file: %s", strerror(errno));
+			}
+		}
+	}
+}
+
 int net__tls_server_ctx(struct mosquitto__listener *listener)
 {
 	char buf[256];
 	int rc;
-	FILE *dhparamfile;
-	DH *dhparam = NULL;
 
 	if(listener->ssl_ctx){
 		SSL_CTX_free(listener->ssl_ctx);
+		listener->ssl_ctx = NULL;
 	}
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-	listener->ssl_ctx = SSL_CTX_new(SSLv23_server_method());
-#else
 	listener->ssl_ctx = SSL_CTX_new(TLS_server_method());
-#endif
 
 	if(!listener->ssl_ctx){
 		log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to create TLS context.");
 		return MOSQ_ERR_TLS;
 	}
 
+#ifdef SSL_OP_NO_TLSv1_3
+	if(db.config->per_listener_settings){
+		if(listener->security_options->psk_file){
+			SSL_CTX_set_options(listener->ssl_ctx, SSL_OP_NO_TLSv1_3);
+		}
+	}else{
+		if(db.config->security_options.psk_file){
+			SSL_CTX_set_options(listener->ssl_ctx, SSL_OP_NO_TLSv1_3);
+		}
+	}
+#endif
+
 	if(listener->tls_version == NULL){
-		SSL_CTX_set_options(listener->ssl_ctx, SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
+		SSL_CTX_set_options(listener->ssl_ctx, SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
 #ifdef SSL_OP_NO_TLSv1_3
 	}else if(!strcmp(listener->tls_version, "tlsv1.3")){
 		SSL_CTX_set_options(listener->ssl_ctx, SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2);
-	}else if(!strcmp(listener->tls_version, "tlsv1.2")){
-		SSL_CTX_set_options(listener->ssl_ctx, SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_3);
-	}else if(!strcmp(listener->tls_version, "tlsv1.1")){
-		SSL_CTX_set_options(listener->ssl_ctx, SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_2 | SSL_OP_NO_TLSv1_3);
-#else
+#endif
 	}else if(!strcmp(listener->tls_version, "tlsv1.2")){
 		SSL_CTX_set_options(listener->ssl_ctx, SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
 	}else if(!strcmp(listener->tls_version, "tlsv1.1")){
-		SSL_CTX_set_options(listener->ssl_ctx, SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_2);
-#endif
+		SSL_CTX_set_options(listener->ssl_ctx, SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
 	}else{
 		log__printf(NULL, MOSQ_LOG_ERR, "Error: Unsupported tls_version \"%s\".", listener->tls_version);
 		return MOSQ_ERR_TLS;
@@ -360,15 +432,19 @@ int net__tls_server_ctx(struct mosquitto__listener *listener)
 	SSL_CTX_set_mode(listener->ssl_ctx, SSL_MODE_RELEASE_BUFFERS);
 #endif
 
-#ifdef WITH_EC
-#if OPENSSL_VERSION_NUMBER >= 0x10002000L && OPENSSL_VERSION_NUMBER < 0x10100000L
-	SSL_CTX_set_ecdh_auto(listener->ssl_ctx, 1);
-#endif
-#endif
+	SSL_CTX_set_dh_auto(listener->ssl_ctx, 1);
 
 #ifdef SSL_OP_NO_RENEGOTIATION
 	SSL_CTX_set_options(listener->ssl_ctx, SSL_OP_NO_RENEGOTIATION);
 #endif
+
+	if(db.tls_keylog){
+		log__printf(NULL, MOSQ_LOG_NOTICE, "TLS key logging to '%s' enabled for all listeners.",
+				db.tls_keylog);
+		log__printf(NULL, MOSQ_LOG_NOTICE, "TLS key logging is for DEBUGGING only.");
+
+		SSL_CTX_set_keylog_callback(listener->ssl_ctx, tls_keylog_callback);
+	}
 
 	snprintf(buf, 256, "mosquitto-%d", listener->port);
 	SSL_CTX_set_session_id_context(listener->ssl_ctx, (unsigned char *)buf, (unsigned int)strlen(buf));
@@ -386,29 +462,22 @@ int net__tls_server_ctx(struct mosquitto__listener *listener)
 			return MOSQ_ERR_TLS;
 		}
 	}
-	if(listener->dhparamfile){
-		dhparamfile = fopen(listener->dhparamfile, "r");
-		if(!dhparamfile){
-			log__printf(NULL, MOSQ_LOG_ERR, "Error loading dhparamfile \"%s\".", listener->dhparamfile);
-			return MOSQ_ERR_TLS;
-		}
-		dhparam = PEM_read_DHparams(dhparamfile, NULL, NULL, NULL);
-		fclose(dhparamfile);
-
-		if(dhparam == NULL || SSL_CTX_set_tmp_dh(listener->ssl_ctx, dhparam) != 1){
-			log__printf(NULL, MOSQ_LOG_ERR, "Error loading dhparamfile \"%s\".", listener->dhparamfile);
-			net__print_ssl_error(NULL);
+	if(listener->ciphers_tls13){
+		rc = SSL_CTX_set_ciphersuites(listener->ssl_ctx, listener->ciphers_tls13);
+		if(rc == 0){
+			log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to set TLS 1.3 ciphersuites. Check cipher_tls13 list \"%s\".", listener->ciphers_tls13);
 			return MOSQ_ERR_TLS;
 		}
 	}
+
 	return MOSQ_ERR_SUCCESS;
 }
 #endif
 
 
-int net__load_crl_file(struct mosquitto__listener *listener)
-{
 #ifdef WITH_TLS
+static int net__load_crl_file(struct mosquitto__listener *listener)
+{
 	X509_STORE *store;
 	X509_LOOKUP *lookup;
 	int rc;
@@ -428,20 +497,15 @@ int net__load_crl_file(struct mosquitto__listener *listener)
 		return MOSQ_ERR_TLS;
 	}
 	X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK);
-#endif
 
 	return MOSQ_ERR_SUCCESS;
 }
+#endif
 
 
 int net__load_certificates(struct mosquitto__listener *listener)
 {
 #ifdef WITH_TLS
-	ENGINE *engine = NULL;
-#  if !defined(OPENSSL_NO_ENGINE)
-	UI_METHOD *ui_method;
-	EVP_PKEY *pkey;
-#  endif
 	int rc;
 
 	if(listener->require_certificate){
@@ -453,25 +517,71 @@ int net__load_certificates(struct mosquitto__listener *listener)
 	if(rc != 1){
 		log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to load server certificate \"%s\". Check certfile.", listener->certfile);
 		net__print_ssl_error(NULL);
-#if !defined(OPENSSL_NO_ENGINE)
-		ENGINE_FINISH(engine);
-#endif
 		return MOSQ_ERR_TLS;
 	}
-	if(listener->tls_engine && listener->tls_keyform == mosq_k_engine){
-#if !defined(OPENSSL_NO_ENGINE)
+	if(listener->tls_engine == NULL || listener->tls_keyform == mosq_k_pem){
+		rc = SSL_CTX_use_PrivateKey_file(listener->ssl_ctx, listener->keyfile, SSL_FILETYPE_PEM);
+		if(rc != 1){
+			log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to load server key file \"%s\". Check keyfile.", listener->keyfile);
+			net__print_ssl_error(NULL);
+			return MOSQ_ERR_TLS;
+		}
+	}
+	rc = SSL_CTX_check_private_key(listener->ssl_ctx);
+	if(rc != 1){
+		log__printf(NULL, MOSQ_LOG_ERR, "Error: Server certificate/key are inconsistent.");
+		net__print_ssl_error(NULL);
+		return MOSQ_ERR_TLS;
+	}
+	/* Load CRLs if they exist. */
+	if(listener->crlfile){
+		rc = net__load_crl_file(listener);
+		if(rc){
+			return rc;
+		}
+	}
+#else
+	UNUSED(listener);
+#endif
+	return MOSQ_ERR_SUCCESS;
+}
+
+
+#if defined(WITH_TLS) && !defined(OPENSSL_NO_ENGINE) && OPENSSL_API_LEVEL < 30000
+static int net__load_engine(struct mosquitto__listener *listener)
+{
+	ENGINE *engine = NULL;
+	UI_METHOD *ui_method;
+	EVP_PKEY *pkey;
+
+	if(!listener->tls_engine){
+		return MOSQ_ERR_SUCCESS;
+	}
+
+	engine = ENGINE_by_id(listener->tls_engine);
+	if(!engine){
+		log__printf(NULL, MOSQ_LOG_ERR, "Error loading %s engine\n", listener->tls_engine);
+		net__print_ssl_error(NULL);
+		return MOSQ_ERR_TLS;
+	}
+	if(!ENGINE_init(engine)){
+		log__printf(NULL, MOSQ_LOG_ERR, "Failed engine initialisation\n");
+		net__print_ssl_error(NULL);
+		return MOSQ_ERR_TLS;
+	}
+	ENGINE_set_default(engine, ENGINE_METHOD_ALL);
+
+	if(listener->tls_keyform == mosq_k_engine){
 		ui_method = net__get_ui_method();
 		if(listener->tls_engine_kpass_sha1){
 			if(!ENGINE_ctrl_cmd(engine, ENGINE_SECRET_MODE, ENGINE_SECRET_MODE_SHA, NULL, NULL, 0)){
 				log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to set engine secret mode sha");
 				net__print_ssl_error(NULL);
-				ENGINE_FINISH(engine);
 				return MOSQ_ERR_TLS;
 			}
 			if(!ENGINE_ctrl_cmd(engine, ENGINE_PIN, 0, listener->tls_engine_kpass_sha1, NULL, 0)){
 				log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to set engine pin");
 				net__print_ssl_error(NULL);
-				ENGINE_FINISH(engine);
 				return MOSQ_ERR_TLS;
 			}
 			ui_method = NULL;
@@ -480,58 +590,27 @@ int net__load_certificates(struct mosquitto__listener *listener)
 		if(!pkey){
 			log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to load engine private key file \"%s\".", listener->keyfile);
 			net__print_ssl_error(NULL);
-			ENGINE_FINISH(engine);
 			return MOSQ_ERR_TLS;
 		}
 		if(SSL_CTX_use_PrivateKey(listener->ssl_ctx, pkey) <= 0){
 			log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to use engine private key file \"%s\".", listener->keyfile);
 			net__print_ssl_error(NULL);
-			ENGINE_FINISH(engine);
-			return MOSQ_ERR_TLS;
-		}
-#endif
-	}else{
-		rc = SSL_CTX_use_PrivateKey_file(listener->ssl_ctx, listener->keyfile, SSL_FILETYPE_PEM);
-		if(rc != 1){
-			log__printf(NULL, MOSQ_LOG_ERR, "Error: Unable to load server key file \"%s\". Check keyfile.", listener->keyfile);
-			net__print_ssl_error(NULL);
-#if !defined(OPENSSL_NO_ENGINE)
-			ENGINE_FINISH(engine);
-#endif
 			return MOSQ_ERR_TLS;
 		}
 	}
-	rc = SSL_CTX_check_private_key(listener->ssl_ctx);
-	if(rc != 1){
-		log__printf(NULL, MOSQ_LOG_ERR, "Error: Server certificate/key are inconsistent.");
-		net__print_ssl_error(NULL);
-#if !defined(OPENSSL_NO_ENGINE)
-		ENGINE_FINISH(engine);
-#endif
-		return MOSQ_ERR_TLS;
-	}
-	/* Load CRLs if they exist. */
-	if(listener->crlfile){
-		rc = net__load_crl_file(listener);
-		if(rc){
-#if !defined(OPENSSL_NO_ENGINE)
-			ENGINE_FINISH(engine);
-#endif
-			return rc;
-		}
-	}
-#endif
+	ENGINE_free(engine); /* release the structural reference from ENGINE_by_id() */
+
 	return MOSQ_ERR_SUCCESS;
 }
+#endif
 
 
 int net__tls_load_verify(struct mosquitto__listener *listener)
 {
 #ifdef WITH_TLS
-	ENGINE *engine = NULL;
 	int rc;
 
-#if OPENSSL_VERSION_NUMBER < 0x30000000L
+#  if OPENSSL_VERSION_NUMBER < 0x30000000L
 	if(listener->cafile || listener->capath){
 		rc = SSL_CTX_load_verify_locations(listener->ssl_ctx, listener->cafile, listener->capath);
 		if(rc == 0){
@@ -544,7 +623,7 @@ int net__tls_load_verify(struct mosquitto__listener *listener)
 			}
 		}
 	}
-#else
+#  else
 	if(listener->cafile){
 		rc = SSL_CTX_load_verify_file(listener->ssl_ctx, listener->cafile);
 		if(rc == 0){
@@ -561,29 +640,92 @@ int net__tls_load_verify(struct mosquitto__listener *listener)
 			return MOSQ_ERR_TLS;
 		}
 	}
-#endif
+#  endif
 
-	if(listener->tls_engine){
-#if !defined(OPENSSL_NO_ENGINE)
-		engine = ENGINE_by_id(listener->tls_engine);
-		if(!engine){
-			log__printf(NULL, MOSQ_LOG_ERR, "Error loading %s engine\n", listener->tls_engine);
-			net__print_ssl_error(NULL);
-			return MOSQ_ERR_TLS;
-		}
-		if(!ENGINE_init(engine)){
-			log__printf(NULL, MOSQ_LOG_ERR, "Failed engine initialisation\n");
-			net__print_ssl_error(NULL);
-			ENGINE_free(engine);
-			return MOSQ_ERR_TLS;
-		}
-		ENGINE_set_default(engine, ENGINE_METHOD_ALL);
-		ENGINE_free(engine); /* release the structural reference from ENGINE_by_id() */
-#endif
+#  if !defined(OPENSSL_NO_ENGINE) && OPENSSL_API_LEVEL < 30000
+	if(net__load_engine(listener)){
+		return MOSQ_ERR_TLS;
 	}
+#  endif
 #endif
 	return net__load_certificates(listener);
 }
+
+
+#ifndef WIN32
+static int net__bind_interface(struct mosquitto__listener *listener, struct addrinfo *rp)
+{
+	/*
+	 * This binds the listener sock to a network interface.
+	 * The use of SO_BINDTODEVICE requires root access, which we don't have, so instead
+	 * use getifaddrs to find the interface addresses, and use IP of the
+	 * matching interface in the later bind().
+	 */
+	struct ifaddrs *ifaddr;
+	bool have_interface = false;
+
+	if(getifaddrs(&ifaddr) < 0){
+		net__print_error(MOSQ_LOG_ERR, "Error: %s");
+		return MOSQ_ERR_ERRNO;
+	}
+
+	for(struct ifaddrs *ifa=ifaddr; ifa!=NULL; ifa=ifa->ifa_next){
+		if(ifa->ifa_addr == NULL){
+			continue;
+		}
+
+		if(!strcasecmp(listener->bind_interface, ifa->ifa_name)){
+			have_interface = true;
+
+			if(ifa->ifa_addr->sa_family == rp->ai_addr->sa_family){
+				if(rp->ai_addr->sa_family == AF_INET){
+					if(listener->host &&
+							memcmp(&((struct sockaddr_in *)rp->ai_addr)->sin_addr,
+								&((struct sockaddr_in *)ifa->ifa_addr)->sin_addr,
+								sizeof(struct in_addr))){
+
+						log__printf(NULL, MOSQ_LOG_ERR, "Error: Interface address for %s does not match specified listener address (%s).",
+								listener->bind_interface, listener->host);
+						return MOSQ_ERR_INVAL;
+					}else{
+						memcpy(&((struct sockaddr_in *)rp->ai_addr)->sin_addr,
+								&((struct sockaddr_in *)ifa->ifa_addr)->sin_addr,
+								sizeof(struct in_addr));
+
+						freeifaddrs(ifaddr);
+						return MOSQ_ERR_SUCCESS;
+					}
+				}else if(rp->ai_addr->sa_family == AF_INET6){
+					if(listener->host &&
+							memcmp(&((struct sockaddr_in6 *)rp->ai_addr)->sin6_addr,
+								&((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr,
+								sizeof(struct in6_addr))){
+
+						log__printf(NULL, MOSQ_LOG_ERR, "Error: Interface address for %s does not match specified listener address (%s).",
+								listener->bind_interface, listener->host);
+						return MOSQ_ERR_INVAL;
+					}else{
+						memcpy(&((struct sockaddr_in6 *)rp->ai_addr)->sin6_addr,
+								&((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr,
+								sizeof(struct in6_addr));
+						freeifaddrs(ifaddr);
+						return MOSQ_ERR_SUCCESS;
+					}
+				}
+			}
+		}
+	}
+	freeifaddrs(ifaddr);
+	if(have_interface){
+		log__printf(NULL, MOSQ_LOG_WARNING, "Warning: Interface %s does not support %s configuration.",
+					listener->bind_interface, rp->ai_addr->sa_family == AF_INET ? "IPv4" : "IPv6");
+		return MOSQ_ERR_NOT_SUPPORTED;
+	}else{
+		log__printf(NULL, MOSQ_LOG_ERR, "Error: Interface %s does not exist.", listener->bind_interface);
+		return MOSQ_ERR_NOT_FOUND;
+	}
+}
+#endif
 
 
 static int net__socket_listen_tcp(struct mosquitto__listener *listener)
@@ -594,8 +736,8 @@ static int net__socket_listen_tcp(struct mosquitto__listener *listener)
 	char service[10];
 	int rc;
 	int ss_opt = 1;
-#ifdef SO_BINDTODEVICE
-	struct ifreq ifr;
+#ifndef WIN32
+	bool interface_bound = false;
 #endif
 
 	if(!listener) return MOSQ_ERR_INVAL;
@@ -634,7 +776,7 @@ static int net__socket_listen_tcp(struct mosquitto__listener *listener)
 			continue;
 		}
 		listener->sock_count++;
-		listener->socks = mosquitto__realloc(listener->socks, sizeof(mosq_sock_t)*(size_t)listener->sock_count);
+		listener->socks = mosquitto_realloc(listener->socks, sizeof(mosq_sock_t)*(size_t)listener->sock_count);
 		if(!listener->socks){
 			log__printf(NULL, MOSQ_LOG_ERR, "Error: Out of memory.");
 			freeaddrinfo(ainfo);
@@ -655,31 +797,40 @@ static int net__socket_listen_tcp(struct mosquitto__listener *listener)
 
 		if(net__socket_nonblock(&sock)){
 			freeaddrinfo(ainfo);
-			mosquitto__free(listener->socks);
+			mosquitto_FREE(listener->socks);
 			return 1;
 		}
 
-#ifdef SO_BINDTODEVICE
+#ifndef WIN32
 		if(listener->bind_interface){
-			memset(&ifr, 0, sizeof(ifr));
-			strncpy(ifr.ifr_name, listener->bind_interface, sizeof(ifr.ifr_name)-1);
-			ifr.ifr_name[sizeof(ifr.ifr_name)-1] = '\0';
-			log__printf(NULL, MOSQ_LOG_INFO, "Binding listener to interface \"%s\".", ifr.ifr_name);
-			if(setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, (void *)&ifr, sizeof(ifr)) < 0) {
-				net__print_error(MOSQ_LOG_ERR, "Error: %s");
+			/* It might be possible that an interface does not support all relevant sa_families.
+			 * We should successfully find at least one. */
+			rc = net__bind_interface(listener, rp);
+			if(rc){
 				COMPAT_CLOSE(sock);
-				freeaddrinfo(ainfo);
-				mosquitto__free(listener->socks);
-				return 1;
+				listener->sock_count--;
+				if(rc == MOSQ_ERR_NOT_FOUND || rc == MOSQ_ERR_INVAL){
+					freeaddrinfo(ainfo);
+					return rc;
+				}else{
+					continue;
+				}
 			}
+			interface_bound = true;
 		}
 #endif
 
 		if(bind(sock, rp->ai_addr, rp->ai_addrlen) == -1){
+#if defined(__linux__)
+			if(errno == EACCES){
+				log__printf(NULL, MOSQ_LOG_ERR, "If you are trying to bind to a privileged port (<1024), try using setcap and do not start the broker as root:");
+				log__printf(NULL, MOSQ_LOG_ERR, "    sudo setcap 'CAP_NET_BIND_SERVICE=+ep /usr/sbin/mosquitto'");
+			}
+#endif
 			net__print_error(MOSQ_LOG_ERR, "Error: %s");
 			COMPAT_CLOSE(sock);
 			freeaddrinfo(ainfo);
-			mosquitto__free(listener->socks);
+			mosquitto_FREE(listener->socks);
 			return 1;
 		}
 
@@ -687,11 +838,18 @@ static int net__socket_listen_tcp(struct mosquitto__listener *listener)
 			net__print_error(MOSQ_LOG_ERR, "Error: %s");
 			freeaddrinfo(ainfo);
 			COMPAT_CLOSE(sock);
-			mosquitto__free(listener->socks);
+			mosquitto_FREE(listener->socks);
 			return 1;
 		}
 	}
 	freeaddrinfo(ainfo);
+
+#ifndef WIN32
+	if(listener->bind_interface && !interface_bound){
+		mosquitto_FREE(listener->socks);
+		return 1;
+	}
+#endif
 
 	return 0;
 }
@@ -725,7 +883,7 @@ static int net__socket_listen_unix(struct mosquitto__listener *listener)
 		return 1;
 	}
 	listener->sock_count++;
-	listener->socks = mosquitto__realloc(listener->socks, sizeof(mosq_sock_t)*(size_t)listener->sock_count);
+	listener->socks = mosquitto_realloc(listener->socks, sizeof(mosq_sock_t)*(size_t)listener->sock_count);
 	if(!listener->socks){
 		log__printf(NULL, MOSQ_LOG_ERR, "Error: Out of memory.");
 		COMPAT_CLOSE(sock);
@@ -788,17 +946,13 @@ int net__socket_listen(struct mosquitto__listener *listener)
 			if(net__tls_load_verify(listener)){
 				return 1;
 			}
+		}
 #  ifdef FINAL_WITH_TLS_PSK
-		}else if(listener->psk_hint){
-			if(tls_ex_index_context == -1){
-				tls_ex_index_context = SSL_get_ex_new_index(0, "client context", NULL, NULL, NULL);
-			}
-			if(tls_ex_index_listener == -1){
-				tls_ex_index_listener = SSL_get_ex_new_index(0, "listener", NULL, NULL, NULL);
-			}
-
-			if(net__tls_server_ctx(listener)){
-				return 1;
+		if(listener->psk_hint){
+			if(listener->certfile == NULL || listener->keyfile == NULL){
+				if(net__tls_server_ctx(listener)){
+					return 1;
+				}
 			}
 			SSL_CTX_set_psk_server_callback(listener->ssl_ctx, psk_server_callback);
 			if(listener->psk_hint){
@@ -809,7 +963,13 @@ int net__socket_listen(struct mosquitto__listener *listener)
 					return 1;
 				}
 			}
+		}
 #  endif /* FINAL_WITH_TLS_PSK */
+		if(tls_ex_index_context == -1){
+			tls_ex_index_context = SSL_get_ex_new_index(0, "client context", NULL, NULL, NULL);
+		}
+		if(tls_ex_index_listener == -1){
+			tls_ex_index_listener = SSL_get_ex_new_index(0, "listener", NULL, NULL, NULL);
 		}
 #endif /* WITH_TLS */
 		return 0;
@@ -818,7 +978,7 @@ int net__socket_listen(struct mosquitto__listener *listener)
 	}
 }
 
-int net__socket_get_address(mosq_sock_t sock, char *buf, size_t len)
+int net__socket_get_address(mosq_sock_t sock, char *buf, size_t len, uint16_t *remote_port)
 {
 	struct sockaddr_storage addr;
 	socklen_t addrlen;
@@ -827,10 +987,16 @@ int net__socket_get_address(mosq_sock_t sock, char *buf, size_t len)
 	addrlen = sizeof(addr);
 	if(!getpeername(sock, (struct sockaddr *)&addr, &addrlen)){
 		if(addr.ss_family == AF_INET){
+			if(remote_port){
+				*remote_port = ntohs(((struct sockaddr_in *)&addr)->sin_port);
+			}
 			if(inet_ntop(AF_INET, &((struct sockaddr_in *)&addr)->sin_addr.s_addr, buf, (socklen_t)len)){
 				return 0;
 			}
 		}else if(addr.ss_family == AF_INET6){
+			if(remote_port){
+				*remote_port = ntohs(((struct sockaddr_in6 *)&addr)->sin6_port);
+			}
 			if(inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&addr)->sin6_addr.s6_addr, buf, (socklen_t)len)){
 				return 0;
 			}

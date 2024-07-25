@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
@@ -9,6 +9,8 @@ The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
 
 Contributors:
    Roger Light - initial implementation and documentation.
@@ -21,19 +23,20 @@ Contributors:
 
 #ifdef WITH_BROKER
 #  include "mosquitto_broker_internal.h"
+#  include "sys_tree.h"
 #endif
 
 #include "mosquitto.h"
 #include "mosquitto_internal.h"
 #include "logging_mosq.h"
-#include "memory_mosq.h"
-#include "mqtt_protocol.h"
+#include "mosquitto/mqtt_protocol.h"
 #include "packet_mosq.h"
 #include "property_mosq.h"
+#include "send_mosq.h"
 #include "util_mosq.h"
 
 
-int send__subscribe(struct mosquitto *mosq, int *mid, int topic_count, const char **topic, int topic_qos, const mosquitto_property *properties)
+int send__subscribe(struct mosquitto *mosq, int *mid, int topic_count, char *const *const topic, int topic_qos, const mosquitto_property *properties)
 {
 	struct mosquitto__packet *packet = NULL;
 	uint32_t packetlen;
@@ -47,7 +50,7 @@ int send__subscribe(struct mosquitto *mosq, int *mid, int topic_count, const cha
 
 	packetlen = 2;
 	if(mosq->protocol == mosq_p_mqtt5){
-		packetlen += property__get_remaining_length(properties);
+		packetlen += mosquitto_property_get_remaining_length(properties);
 	}
 	for(i=0; i<topic_count; i++){
 		tlen = strlen(topic[i]);
@@ -57,15 +60,9 @@ int send__subscribe(struct mosquitto *mosq, int *mid, int topic_count, const cha
 		packetlen += 2U+(uint16_t)tlen + 1U;
 	}
 
-	packet = mosquitto__calloc(1, sizeof(struct mosquitto__packet));
-	if(!packet) return MOSQ_ERR_NOMEM;
-
-
-	packet->command = CMD_SUBSCRIBE | (1<<1);
-	packet->remaining_length = packetlen;
-	rc = packet__alloc(packet);
+	rc = packet__alloc(&packet, CMD_SUBSCRIBE | 2, packetlen);
 	if(rc){
-		mosquitto__free(packet);
+		mosquitto_FREE(packet);
 		return rc;
 	}
 
@@ -86,14 +83,16 @@ int send__subscribe(struct mosquitto *mosq, int *mid, int topic_count, const cha
 
 #ifdef WITH_BROKER
 # ifdef WITH_BRIDGE
-	log__printf(mosq, MOSQ_LOG_DEBUG, "Bridge %s sending SUBSCRIBE (Mid: %d, Topic: %s, QoS: %d, Options: 0x%02x)", mosq->id, local_mid, topic[0], topic_qos&0x03, topic_qos&0xFC);
+	log__printf(mosq, MOSQ_LOG_DEBUG, "Bridge %s sending SUBSCRIBE (Mid: %d, Topic: %s, QoS: %d, Options: 0x%02x)", SAFE_PRINT(mosq->id), local_mid, topic[0], topic_qos&0x03, topic_qos&0xFC);
 # endif
 #else
 	for(i=0; i<topic_count; i++){
-		log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending SUBSCRIBE (Mid: %d, Topic: %s, QoS: %d, Options: 0x%02x)", mosq->id, local_mid, topic[i], topic_qos&0x03, topic_qos&0xFC);
+		log__printf(mosq, MOSQ_LOG_DEBUG, "Client %s sending SUBSCRIBE (Mid: %d, Topic: %s, QoS: %d, Options: 0x%02x)", SAFE_PRINT(mosq->id), local_mid, topic[i], topic_qos&0x03, topic_qos&0xFC);
 	}
 #endif
 
+#ifdef WITH_BROKER
+	metrics__int_inc(mosq_counter_mqtt_subscribe_sent, 1);
+#endif
 	return packet__queue(mosq, packet);
 }
-

@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2020-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
@@ -10,21 +10,20 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
 
 #include "config.h"
 
-#include <cJSON.h>
+#include <cjson/cJSON.h>
 #include <stdio.h>
 #include <uthash.h>
 
-#include "mosquitto.h"
-#include "mosquitto_broker.h"
-#include "json_help.h"
-
 #include "dynamic_security.h"
+#include "json_help.h"
 
 /* ################################################################
  * #

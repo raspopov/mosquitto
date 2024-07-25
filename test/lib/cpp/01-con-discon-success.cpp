@@ -1,7 +1,6 @@
-//#include <stdbool.h>
-//#include <cstdio>
-//#include <stdlib.h>
-#include <mosquittopp.h>
+#include <cassert>
+#include <cstdio>
+#include <mosquitto/libmosquittopp.h>
 
 static int run = -1;
 
@@ -35,8 +34,9 @@ void mosquittopp_test::on_disconnect(int rc)
 
 int main(int argc, char *argv[])
 {
-	struct mosquittopp_test *mosq;
+	mosquittopp_test *mosq;
 
+	assert(argc == 2);
 	int port = atoi(argv[1]);
 
 	mosqpp::lib_init();

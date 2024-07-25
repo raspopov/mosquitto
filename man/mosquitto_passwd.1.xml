@@ -50,7 +50,7 @@
 			password files for the mosquitto MQTT broker.</para>
 		<para>Usernames must not contain ":". Passwords are stored in a similar
 			format to
-			<citerefentry><refentrytitle>crypt</refentrytitle><manvolnum>3</manvolnum></citerefentry>.</para>
+		<citerefentry><refentrytitle><link xlink:href="https://linux.die.net/man/3/crypt">crypt</link></refentrytitle><manvolnum>3</manvolnum></citerefentry>.</para>
 	</refsect1>
 
 	<refsect1>
@@ -84,9 +84,10 @@
 				<term><option>-H</option></term>
 				<listitem>
 					<para>Choose the hash to use. Can be one of
-						<replaceable>sha512-pbkdf2</replaceable> or
+						<replaceable>argon2id</replaceable>,
+						<replaceable>sha512-pbkdf2</replaceable>, or
 						<replaceable>sha512</replaceable>. Defaults to
-						<replaceable>sha512-pbkdf2</replaceable>. The
+						<replaceable>argon2id</replaceable>. The
 						<replaceable>sha512</replaceable> option is provided for
 						creating password files for use with Mosquitto 1.6
 						and earlier.</para>
@@ -129,12 +130,12 @@
 
 	<refsect1>
 		<title>Exit Status</title>
-            <para>
-                mosquitto_sub returns zero on success, or non-zero on error. If
-                the connection is refused by the broker at the MQTT level, then
-                the exit code is the CONNACK reason code. If another error
-                occurs, the exit code is a libmosquitto return value.
-            </para>
+			<para>
+				mosquitto_sub returns zero on success, or non-zero on error. If
+				the connection is refused by the broker at the MQTT level, then
+				the exit code is the CONNACK reason code. If another error
+				occurs, the exit code is a libmosquitto return value.
+			</para>
 
 			<para>MQTT v3.1.1 CONNACK codes:</para>
 			<itemizedlist mark="circle">
@@ -190,6 +191,22 @@
 		<para>Add a user to a new password file:</para>
 		<itemizedlist mark="circle">
 			<listitem><para>mosquitto_passwd <literal>-c</literal> /etc/mosquitto/passwd <literal>ral</literal></para></listitem>
+		</itemizedlist>
+		<para>Add a user to an existing password file:</para>
+		<itemizedlist mark="circle">
+			<listitem><para>mosquitto_passwd /etc/mosquitto/passwd <literal>ral</literal></para></listitem>
+		</itemizedlist>
+		<para>Add a user to an existing password file, passing the password on the command line:</para>
+		<itemizedlist mark="circle">
+			<listitem><para>mosquitto_passwd -b /etc/mosquitto/passwd <literal>ral</literal> <literal>z2Dr0BsvtZ</literal></para></listitem>
+		</itemizedlist>
+		<para>Update the password for a user in an existing password file:</para>
+		<itemizedlist mark="circle">
+			<listitem><para>mosquitto_passwd /etc/mosquitto/passwd <literal>ral</literal></para></listitem>
+		</itemizedlist>
+		<para>Add a user to an existing password file using the sha512 hash for Mosquitto 1.6 compatibility:</para>
+		<itemizedlist mark="circle">
+			<listitem><para>mosquitto_passwd -H sha512 /etc/mosquitto/passwd <literal>ral</literal></para></listitem>
 		</itemizedlist>
 		<para>Delete a user from a password file</para>
 		<itemizedlist mark="circle">

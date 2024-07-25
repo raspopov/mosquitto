@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2020-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
@@ -10,17 +10,25 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
-#include <cJSON.h>
+#include "config.h"
+
+#include <cjson/cJSON.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef WIN32
+#  include <strings.h>
+#endif
+
 #include "mosquitto.h"
 #include "mosquitto_ctrl.h"
-#include "password_mosq.h"
+#include "json_help.h"
 
 int dynsec_role__create(int argc, char *argv[], cJSON *j_command)
 {

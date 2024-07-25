@@ -1,15 +1,17 @@
 /*
-Copyright (c) 2014-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2014-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -23,35 +25,45 @@ Contributors:
 #include <stdlib.h>
 #include <string.h>
 #ifndef WIN32
-#include <unistd.h>
-#include <strings.h>
+#  include <signal.h>
+#  include <strings.h>
+#  include <unistd.h>
 #else
-#include <process.h>
-#include <winsock2.h>
-#define snprintf sprintf_s
-#define strncasecmp _strnicmp
+#  include <process.h>
+#  include <winsock2.h>
+#  define snprintf sprintf_s
+#  define strncasecmp _strnicmp
 #endif
 
 #include <mosquitto.h>
-#include <mqtt_protocol.h>
 #include "client_shared.h"
 
 #ifdef WITH_SOCKS
 static int mosquitto__parse_socks_url(struct mosq_config *cfg, char *url);
 #endif
 static int client_config_line_proc(struct mosq_config *cfg, int pub_or_sub, int argc, char *argv[]);
+#ifdef WITH_TLS
+static void tls_keylog_callback(const SSL *ssl, const char *line);
+static int tls_ex_index_cfg = -1;
+#endif
 
+const char hexseplist[32] = {
+	'!', '"', '#', '$', '&', '\'', '(', ')',
+	'*', '+', ',', '-', '.', '/', ':', ';',
+	'<', '=', '>', '?', '@', '[', '\\', ']',
+	'^', '_', '`', '{', '|', '}', '~', ' ',
+};
 
 static int check_format(const char *str)
 {
-	int i;
+	size_t i;
 	size_t len;
 
 	len = strlen(str);
 	for(i=0; i<len; i++){
 		if(str[i] == '%'){
 			if(i == len-1){
-				// error
+				/* error */
 				fprintf(stderr, "Error: Incomplete format specifier.\n");
 				return 1;
 			}else{
@@ -59,7 +71,7 @@ static int check_format(const char *str)
 					/* Flag characters */
 					i++;
 					if(i == len-1){
-						// error
+						/* error */
 						fprintf(stderr, "Error: Incomplete format specifier.\n");
 						return 1;
 					}
@@ -69,7 +81,7 @@ static int check_format(const char *str)
 				while(str[i+1] >= '0' && str[i+1] <= '9'){
 					i++;
 					if(i == len-1){
-						// error
+						/* error */
 						fprintf(stderr, "Error: Incomplete format specifier.\n");
 						return 1;
 					}
@@ -79,7 +91,7 @@ static int check_format(const char *str)
 					/* Precision specifier */
 					i++;
 					if(i == len-1){
-						// error
+						/* error */
 						fprintf(stderr, "Error: Incomplete format specifier.\n");
 						return 1;
 					}
@@ -87,57 +99,71 @@ static int check_format(const char *str)
 					while(str[i+1] >= '0' && str[i+1] <= '9'){
 						i++;
 						if(i == len-1){
-							// error
+							/* error */
 							fprintf(stderr, "Error: Incomplete format specifier.\n");
 							return 1;
 						}
 					}
 				}
 
+				/* Hex field separator character */
+				for(size_t j=0; j<sizeof(hexseplist); j++){
+					if(str[i+1] == hexseplist[j]){
+						i++;
+						break;
+					}
+				}
+
 				if(str[i+1] == '%'){
-					// Print %, ignore
+					/* Print %, ignore */
 				}else if(str[i+1] == 'A'){
-					// MQTT v5 property topic-alias
+					/* MQTT v5 property topic-alias */
 				}else if(str[i+1] == 'C'){
-					// MQTT v5 property content-type
+					/* MQTT v5 property content-type */
 				}else if(str[i+1] == 'D'){
-					// MQTT v5 property correlation-data
+					/* MQTT v5 property correlation-data */
 				}else if(str[i+1] == 'E'){
-					// MQTT v5 property message-expiry-interval
+					/* MQTT v5 property message-expiry-interval */
 				}else if(str[i+1] == 'F'){
-					// MQTT v5 property payload-format-indicator
+					/* MQTT v5 property payload-format-indicator */
 				}else if(str[i+1] == 'I'){
-					// ISO 8601 date+time
+					/* ISO 8601 date+time */
 				}else if(str[i+1] == 'l'){
-					// payload length
+					/* payload length */
 				}else if(str[i+1] == 'm'){
-					// mid
+					/* mid */
 				}else if(str[i+1] == 'P'){
-					// MQTT v5 property user-property
+					/* MQTT v5 property user-property */
 				}else if(str[i+1] == 'p'){
-					// payload
+					/* payload */
 				}else if(str[i+1] == 'q'){
-					// qos
+					/* qos */
 				}else if(str[i+1] == 'R'){
-					// MQTT v5 property response-topic
+					/* MQTT v5 property response-topic */
 				}else if(str[i+1] == 'S'){
-					// MQTT v5 property subscription-identifier
+					/* MQTT v5 property subscription-identifier */
 				}else if(str[i+1] == 'r'){
-					// retain
+					/* retain */
 				}else if(str[i+1] == 't'){
-					// topic
+					/* topic */
 				}else if(str[i+1] == 'j'){
-					// JSON output, escaped payload
+					/* JSON output, escaped payload */
 				}else if(str[i+1] == 'J'){
-					// JSON output, assuming JSON payload
+					/* JSON output, assuming JSON payload */
 				}else if(str[i+1] == 'U'){
-					// Unix time+nanoseconds
+					/* Unix time+nanoseconds */
 #ifdef WIN32
 					fprintf(stderr, "Error: The %%U format option is not supported on Windows.\n");
 					return 1;
 #endif
 				}else if(str[i+1] == 'x' || str[i+1] == 'X'){
-					// payload in hex
+					/* payload in hex */
+				}else if(str[i+1] == 'f' || str[i+1] == 'd'){
+					/* payload in float */
+#ifndef __STDC_IEC_559__
+					fprintf(stderr, "Error: Can't print float, missing __STDC_IEC_559__ standard support.\n");
+					return 1;
+#endif
 				}else{
 					fprintf(stderr, "Error: Invalid format specifier '%c'.\n", str[i+1]);
 					return 1;
@@ -146,26 +172,26 @@ static int check_format(const char *str)
 			}
 		}else if(str[i] == '@'){
 			if(i == len-1){
-				// error
+				/* error */
 				fprintf(stderr, "Error: Incomplete format specifier.\n");
 				return 1;
 			}
 			i++;
 		}else if(str[i] == '\\'){
 			if(i == len-1){
-				// error
+				/* error */
 				fprintf(stderr, "Error: Incomplete escape specifier.\n");
 				return 1;
 			}else{
 				switch(str[i+1]){
-					case '\\': // '\'
-					case '0':  // 0 (NULL)
-					case 'a':  // alert
-					case 'e':  // escape
-					case 'n':  // new line
-					case 'r':  // carriage return
-					case 't':  // horizontal tab
-					case 'v':  // vertical tab
+					case '\\': /* '\' */
+					case '0':  /* 0 (NULL) */
+					case 'a':  /* alert */
+					case 'e':  /* escape */
+					case 'n':  /* new line */
+					case 'r':  /* carriage return */
+					case 't':  /* horizontal tab */
+					case 'v':  /* vertical tab */
 						break;
 
 					default:
@@ -181,7 +207,7 @@ static int check_format(const char *str)
 }
 
 
-void init_config(struct mosq_config *cfg, int pub_or_sub)
+static void init_config(struct mosq_config *cfg, int pub_or_sub)
 {
 	memset(cfg, 0, sizeof(*cfg));
 	cfg->port = PORT_UNDEFINED;
@@ -200,6 +226,7 @@ void init_config(struct mosq_config *cfg, int pub_or_sub)
 		cfg->protocol_version = MQTT_PROTOCOL_V311;
 	}
 	cfg->session_expiry_interval = -1; /* -1 means unset here, the user can't set it to -1. */
+	cfg->transport = MOSQ_T_TCP;
 }
 
 void client_config_cleanup(struct mosq_config *cfg)
@@ -263,7 +290,31 @@ void client_config_cleanup(struct mosq_config *cfg)
 	mosquitto_property_free_all(&cfg->unsubscribe_props);
 	mosquitto_property_free_all(&cfg->disconnect_props);
 	mosquitto_property_free_all(&cfg->will_props);
+	free(cfg->options_file);
 }
+
+/* Find if there is "-o" in the options */
+static int client_config_options_file(struct mosq_config *cfg, int argc, char *argv[])
+{
+	int i;
+
+	for(i=1; i<argc; i++){
+		if(!strcmp(argv[i], "-o")){
+			if(cfg->options_file){
+				fprintf(stderr, "Error: Duplicate -o argument given.\n\n");
+				return 1;
+			}
+			if(i==argc-1){
+				fprintf(stderr, "Error: -o argument given but no options file specified.\n\n");
+				return 1;
+			}else{
+				cfg->options_file = strdup(argv[i+1]);
+			}
+		}
+	}
+	return 0;
+}
+
 
 int client_config_load(struct mosq_config *cfg, int pub_or_sub, int argc, char *argv[])
 {
@@ -284,94 +335,105 @@ int client_config_load(struct mosq_config *cfg, int pub_or_sub, int argc, char *
 
 	init_config(cfg, pub_or_sub);
 
+	if(client_config_options_file(cfg, argc, argv)){
+		return 1;
+	}
+
+	if(cfg->options_file == NULL){
 	/* Default config file */
 #ifndef WIN32
-	env = getenv("XDG_CONFIG_HOME");
-	if(env){
-		len = strlen(env) + strlen("/mosquitto_pub") + 1;
-		loc = malloc(len);
-		if(!loc){
-			err_printf(cfg, "Error: Out of memory.\n");
-			return 1;
-		}
-		if(pub_or_sub == CLIENT_PUB){
-			snprintf(loc, len, "%s/mosquitto_pub", env);
-		}else if(pub_or_sub == CLIENT_SUB){
-			snprintf(loc, len, "%s/mosquitto_sub", env);
-		}else{
-			snprintf(loc, len, "%s/mosquitto_rr", env);
-		}
-		loc[len-1] = '\0';
-	}else{
-		env = getenv("HOME");
+		env = getenv("XDG_CONFIG_HOME");
 		if(env){
-			len = strlen(env) + strlen("/.config/mosquitto_pub") + 1;
+			len = strlen(env) + strlen("/mosquitto_pub") + 1;
 			loc = malloc(len);
 			if(!loc){
 				err_printf(cfg, "Error: Out of memory.\n");
 				return 1;
 			}
 			if(pub_or_sub == CLIENT_PUB){
-				snprintf(loc, len, "%s/.config/mosquitto_pub", env);
+				snprintf(loc, len, "%s/mosquitto_pub", env);
 			}else if(pub_or_sub == CLIENT_SUB){
-				snprintf(loc, len, "%s/.config/mosquitto_sub", env);
+				snprintf(loc, len, "%s/mosquitto_sub", env);
 			}else{
-				snprintf(loc, len, "%s/.config/mosquitto_rr", env);
+				snprintf(loc, len, "%s/mosquitto_rr", env);
 			}
 			loc[len-1] = '\0';
+		}else{
+			env = getenv("HOME");
+			if(env){
+				len = strlen(env) + strlen("/.config/mosquitto_pub") + 1;
+				loc = malloc(len);
+				if(!loc){
+					err_printf(cfg, "Error: Out of memory.\n");
+					return 1;
+				}
+				if(pub_or_sub == CLIENT_PUB){
+					snprintf(loc, len, "%s/.config/mosquitto_pub", env);
+				}else if(pub_or_sub == CLIENT_SUB){
+					snprintf(loc, len, "%s/.config/mosquitto_sub", env);
+				}else{
+					snprintf(loc, len, "%s/.config/mosquitto_rr", env);
+				}
+				loc[len-1] = '\0';
+			}
 		}
-	}
 
 #else
-	rc = GetEnvironmentVariable("USERPROFILE", env, 1024);
-	if(rc > 0 && rc < 1024){
-		len = strlen(env) + strlen("\\mosquitto_pub.conf") + 1;
-		loc = malloc(len);
-		if(!loc){
-			err_printf(cfg, "Error: Out of memory.\n");
-			return 1;
-		}
-		if(pub_or_sub == CLIENT_PUB){
-			snprintf(loc, len, "%s\\mosquitto_pub.conf", env);
-		}else if(pub_or_sub == CLIENT_SUB){
-			snprintf(loc, len, "%s\\mosquitto_sub.conf", env);
-		}else{
-			snprintf(loc, len, "%s\\mosquitto_rr.conf", env);
-		}
+		rc = GetEnvironmentVariable("USERPROFILE", env, 1024);
+		if(rc > 0 && rc < 1024){
+			len = strlen(env) + strlen("\\mosquitto_pub.conf") + 1;
+			loc = malloc(len);
+			if(!loc){
+				err_printf(cfg, "Error: Out of memory.\n");
+				return 1;
+			}
+			if(pub_or_sub == CLIENT_PUB){
+				snprintf(loc, len, "%s\\mosquitto_pub.conf", env);
+			}else if(pub_or_sub == CLIENT_SUB){
+				snprintf(loc, len, "%s\\mosquitto_sub.conf", env);
+			}else{
+				snprintf(loc, len, "%s\\mosquitto_rr.conf", env);
+			}
 		loc[len-1] = '\0';
-	}
+		}
 #endif
+	}
 
-	if(loc){
+	if(cfg->options_file){
+		fptr = fopen(cfg->options_file, "rt");
+	}else if(loc){
 		fptr = fopen(loc, "rt");
-		if(fptr){
-			while(fgets(line, 1024, fptr)){
-				if(line[0] == '#') continue; /* Comments */
+		free(loc);
+		loc = NULL;
+	}else{
+		return 1;
+	}
+	if(fptr){
+		while(fgets(line, 1024, fptr)){
+			if(line[0] == '#') continue; /* Comments */
 
-				while(line[strlen(line)-1] == 10 || line[strlen(line)-1] == 13){
-					line[strlen(line)-1] = 0;
+			while(line[strlen(line)-1] == 10 || line[strlen(line)-1] == 13){
+				line[strlen(line)-1] = 0;
+			}
+			/* All offset by one "args" here, because real argc/argv has
+			 * program name as the first entry. */
+			args[1] = strtok(line, " ");
+			if(args[1]){
+				args[2] = strtok(NULL, "");
+				if(args[2]){
+					count = 3;
+				}else{
+					count = 2;
 				}
-				/* All offset by one "args" here, because real argc/argv has
-				 * program name as the first entry. */
-				args[1] = strtok(line, " ");
-				if(args[1]){
-					args[2] = strtok(NULL, " ");
-					if(args[2]){
-						count = 3;
-					}else{
-						count = 2;
-					}
-					rc = client_config_line_proc(cfg, pub_or_sub, count, args);
-					if(rc){
-						fclose(fptr);
-						free(loc);
-						return rc;
-					}
+				rc = client_config_line_proc(cfg, pub_or_sub, count, args);
+				if(rc){
+					fclose(fptr);
+					free(loc);
+					return rc;
 				}
 			}
-			fclose(fptr);
 		}
-		free(loc);
+		fclose(fptr);
 	}
 
 	/* Deal with real argc/argv */
@@ -435,8 +497,8 @@ int client_config_load(struct mosq_config *cfg, int pub_or_sub, int argc, char *
 	}
 
 	if(pub_or_sub == CLIENT_SUB){
-		if(cfg->topic_count == 0){
-			fprintf(stderr, "Error: You must specify a topic to subscribe to.\n");
+		if(cfg->topic_count == 0 && cfg->unsub_topic_count == 0){
+			fprintf(stderr, "Error: You must specify a topic to subscribe to (-t) or unsubscribe from (-U).\n");
 			return 1;
 		}
 	}
@@ -449,41 +511,10 @@ int client_config_load(struct mosq_config *cfg, int pub_or_sub, int argc, char *
 		}
 	}
 
-	rc = mosquitto_property_check_all(CMD_CONNECT, cfg->connect_props);
-	if(rc){
-		err_printf(cfg, "Error in CONNECT properties: %s\n", mosquitto_strerror(rc));
-		return 1;
-	}
-	rc = mosquitto_property_check_all(CMD_PUBLISH, cfg->publish_props);
-	if(rc){
-		err_printf(cfg, "Error in PUBLISH properties: %s\n", mosquitto_strerror(rc));
-		return 1;
-	}
-	rc = mosquitto_property_check_all(CMD_SUBSCRIBE, cfg->subscribe_props);
-	if(rc){
-		err_printf(cfg, "Error in SUBSCRIBE properties: %s\n", mosquitto_strerror(rc));
-		return 1;
-	}
-	rc = mosquitto_property_check_all(CMD_UNSUBSCRIBE, cfg->unsubscribe_props);
-	if(rc){
-		err_printf(cfg, "Error in UNSUBSCRIBE properties: %s\n", mosquitto_strerror(rc));
-		return 1;
-	}
-	rc = mosquitto_property_check_all(CMD_DISCONNECT, cfg->disconnect_props);
-	if(rc){
-		err_printf(cfg, "Error in DISCONNECT properties: %s\n", mosquitto_strerror(rc));
-		return 1;
-	}
-	rc = mosquitto_property_check_all(CMD_WILL, cfg->will_props);
-	if(rc){
-		err_printf(cfg, "Error in Will properties: %s\n", mosquitto_strerror(rc));
-		return 1;
-	}
-
 	return MOSQ_ERR_SUCCESS;
 }
 
-int cfg_add_topic(struct mosq_config *cfg, int type, char *topic, const char *arg)
+static int cfg_add_topic(struct mosq_config *cfg, int type, char *topic, const char *arg)
 {
 	if(mosquitto_validate_utf8(topic, (int )strlen(topic))){
 		fprintf(stderr, "Error: Malformed UTF-8 in %s argument.\n\n", arg);
@@ -516,6 +547,7 @@ int cfg_add_topic(struct mosq_config *cfg, int type, char *topic, const char *ar
 	}
 	return 0;
 }
+
 
 /* Process a tokenised single line from a file or set of real argc/argv */
 int client_config_line_proc(struct mosq_config *cfg, int pub_or_sub, int argc, char *argv[])
@@ -730,10 +762,30 @@ int client_config_line_proc(struct mosq_config *cfg, int pub_or_sub, int argc, c
 					url += 7;
 					cfg->port = 1883;
 				} else if(!strncasecmp(url, "mqtts://", 8)) {
+#ifdef WITH_TLS
 					url += 8;
 					cfg->port = 8883;
+					cfg->tls_use_os_certs = true;
+#else
+					fprintf(stderr, "Error: TLS support not available.\n\n");
+					return 1;
+#endif
+				} else if(!strncasecmp(url, "ws://", 5)) {
+					url += 5;
+					cfg->port = 1883;
+					cfg->transport = MOSQ_T_WEBSOCKETS;
+				} else if(!strncasecmp(url, "wss://", 6)) {
+#ifdef WITH_TLS
+					url += 6;
+					cfg->port = 8883;
+					cfg->tls_use_os_certs = true;
+					cfg->transport = MOSQ_T_WEBSOCKETS;
+#else
+					fprintf(stderr, "Error: TLS support not available.\n\n");
+					return 1;
+#endif
 				} else {
-					fprintf(stderr, "Error: unsupported URL scheme.\n\n");
+					fprintf(stderr, "Error: Unsupported URL scheme.\n\n");
 					return 1;
 				}
 				topic = strchr(url, '/');
@@ -748,8 +800,9 @@ int client_config_line_proc(struct mosq_config *cfg, int pub_or_sub, int argc, c
 
 				tmp = strchr(url, '@');
 				if(tmp) {
+					char *colon;
 					*tmp++ = 0;
-					char *colon = strchr(url, ':');
+					colon = strchr(url, ':');
 					if(colon) {
 						*colon = 0;
 						cfg->password = strdup(colon + 1);
@@ -818,6 +871,8 @@ int client_config_line_proc(struct mosq_config *cfg, int pub_or_sub, int argc, c
 			i++;
 		}else if(!strcmp(argv[i], "--nodelay")){
 			cfg->tcp_nodelay = true;
+		}else if(!strcmp(argv[i], "--no-tls")){
+			cfg->no_tls = true;
 		}else if(!strcmp(argv[i], "-n") || !strcmp(argv[i], "--null-message")){
 			if(pub_or_sub == CLIENT_SUB){
 				goto unknown_option;
@@ -833,6 +888,9 @@ int client_config_line_proc(struct mosq_config *cfg, int pub_or_sub, int argc, c
 				goto unknown_option;
 			}
 			cfg->eol = false;
+		}else if(!strcmp(argv[i], "-o")){
+			/* Already handled */
+			i++;
 		}else if(!strcmp(argv[i], "-p") || !strcmp(argv[i], "--port")){
 			if(i==argc-1){
 				fprintf(stderr, "Error: -p argument given but no port specified.\n\n");
@@ -983,7 +1041,7 @@ int client_config_line_proc(struct mosq_config *cfg, int pub_or_sub, int argc, c
 			if(cfg->pub_mode != MSGMODE_NONE){
 				fprintf(stderr, "Error: Only one type of message can be sent at once.\n\n");
 				return 1;
-			}else{ 
+			}else{
 				cfg->pub_mode = MSGMODE_STDIN_FILE;
 			}
 #ifdef WITH_SRV
@@ -1049,12 +1107,22 @@ int client_config_line_proc(struct mosq_config *cfg, int pub_or_sub, int argc, c
 				cfg->tls_engine_kpass_sha1 = strdup(argv[i+1]);
 			}
 			i++;
+		}else if(!strcmp(argv[i], "--tls-use-os-certs")){
+			cfg->tls_use_os_certs = true;
 		}else if(!strcmp(argv[i], "--tls-version")){
 			if(i==argc-1){
 				fprintf(stderr, "Error: --tls-version argument given but no version specified.\n\n");
 				return 1;
 			}else{
 				cfg->tls_version = strdup(argv[i+1]);
+			}
+			i++;
+		}else if(!strcmp(argv[i], "--tls-keylog")){
+			if(i==argc-1){
+				fprintf(stderr, "Error: --tls-keylog argument given but no file specified.\n\n");
+				return 1;
+			}else{
+				cfg->tls_keylog = strdup(argv[i+1]);
 			}
 			i++;
 #endif
@@ -1141,6 +1209,16 @@ int client_config_line_proc(struct mosq_config *cfg, int pub_or_sub, int argc, c
 				}
 				i++;
 			}
+		}else if(!strcmp(argv[i], "-w") || !strcmp(argv[i], "--watch")){
+			if(pub_or_sub != CLIENT_SUB){
+				goto unknown_option;
+			}
+#ifdef WIN32
+			fprintf(stderr, "Error: --watch not supported on Windows.\n\n");
+			return 1;
+#else
+			cfg->watch = true;
+#endif
 		}else if(!strcmp(argv[i], "--will-payload")){
 			if(i==argc-1){
 				fprintf(stderr, "Error: --will-payload argument given but no will payload specified.\n\n");
@@ -1180,6 +1258,8 @@ int client_config_line_proc(struct mosq_config *cfg, int pub_or_sub, int argc, c
 				cfg->will_topic = strdup(argv[i+1]);
 			}
 			i++;
+		}else if(!strcmp(argv[i], "--ws")){
+			cfg->transport = MOSQ_T_WEBSOCKETS;
 		}else if(!strcmp(argv[i], "-x")){
 			if(i==argc-1){
 				fprintf(stderr, "Error: -x argument given but no session expiry interval specified.\n\n");
@@ -1204,6 +1284,7 @@ int client_config_line_proc(struct mosq_config *cfg, int pub_or_sub, int argc, c
 						cfg->session_expiry_interval = UINT32_MAX;
 					}
 				}
+				cfg->protocol_version = MQTT_PROTOCOL_V5;
 			}
 			i++;
 		}else{
@@ -1218,30 +1299,31 @@ unknown_option:
 	return 1;
 }
 
-int client_opts_set(struct mosquitto *mosq, struct mosq_config *cfg)
-{
-#if defined(WITH_TLS) || defined(WITH_SOCKS)
-	int rc;
-#endif
 
-	mosquitto_int_option(mosq, MOSQ_OPT_PROTOCOL_VERSION, cfg->protocol_version);
-
-	if(cfg->will_topic && mosquitto_will_set_v5(mosq, cfg->will_topic,
-				cfg->will_payloadlen, cfg->will_payload, cfg->will_qos,
-				cfg->will_retain, cfg->will_props)){
-
-		err_printf(cfg, "Error: Problem setting will.\n");
-		mosquitto_lib_cleanup();
-		return 1;
-	}
-	cfg->will_props = NULL;
-
-	if((cfg->username || cfg->password) && mosquitto_username_pw_set(mosq, cfg->username, cfg->password)){
-		err_printf(cfg, "Error: Problem setting username and/or password.\n");
-		mosquitto_lib_cleanup();
-		return 1;
-	}
 #ifdef WITH_TLS
+static int client_tls_opts_set(struct mosquitto *mosq, struct mosq_config *cfg)
+{
+	int rc;
+
+	if(cfg->no_tls){
+		return MOSQ_ERR_SUCCESS;
+	}
+
+	if(cfg->tls_keylog){
+		if(tls_ex_index_cfg == -1){
+			tls_ex_index_cfg = SSL_CTX_get_ex_new_index(0, "client config", NULL, NULL, NULL);
+		}
+		cfg->ssl_ctx = SSL_CTX_new(TLS_client_method());
+		if(!cfg->ssl_ctx){
+			err_printf(cfg, "Error: Unable to create SSL_CTX.\n");
+			return 1;
+		}
+		SSL_CTX_set_ex_data(cfg->ssl_ctx, tls_ex_index_cfg, cfg);
+		mosquitto_void_option(mosq, MOSQ_OPT_SSL_CTX, cfg->ssl_ctx);
+		mosquitto_int_option(mosq, MOSQ_OPT_SSL_CTX_WITH_DEFAULTS, 1);
+		SSL_CTX_set_keylog_callback(cfg->ssl_ctx, tls_keylog_callback);
+	}
+
 	if(cfg->cafile || cfg->capath){
 		rc = mosquitto_tls_set(mosq, cfg->cafile, cfg->capath, cfg->certfile, cfg->keyfile, NULL);
 		if(rc){
@@ -1250,45 +1332,75 @@ int client_opts_set(struct mosquitto *mosq, struct mosq_config *cfg)
 			}else{
 				err_printf(cfg, "Error: Problem setting TLS options: %s.\n", mosquitto_strerror(rc));
 			}
-			mosquitto_lib_cleanup();
 			return 1;
 		}
+#  ifdef FINAL_WITH_TLS_PSK
+	}else if(cfg->psk){
+		if(mosquitto_tls_psk_set(mosq, cfg->psk, cfg->psk_identity, NULL)){
+			err_printf(cfg, "Error: Problem setting TLS-PSK options.\n");
+			return 1;
+		}
+#  endif
+	}else if(cfg->port == 8883){
+		mosquitto_int_option(mosq, MOSQ_OPT_TLS_USE_OS_CERTS, 1);
 	}
+	if(cfg->tls_use_os_certs){
+		mosquitto_int_option(mosq, MOSQ_OPT_TLS_USE_OS_CERTS, 1);
+	}
+
 	if(cfg->insecure && mosquitto_tls_insecure_set(mosq, true)){
 		err_printf(cfg, "Error: Problem setting TLS insecure option.\n");
-		mosquitto_lib_cleanup();
 		return 1;
 	}
 	if(cfg->tls_engine && mosquitto_string_option(mosq, MOSQ_OPT_TLS_ENGINE, cfg->tls_engine)){
 		err_printf(cfg, "Error: Problem setting TLS engine, is %s a valid engine?\n", cfg->tls_engine);
-		mosquitto_lib_cleanup();
 		return 1;
 	}
 	if(cfg->keyform && mosquitto_string_option(mosq, MOSQ_OPT_TLS_KEYFORM, cfg->keyform)){
 		err_printf(cfg, "Error: Problem setting key form, it must be one of 'pem' or 'engine'.\n");
-		mosquitto_lib_cleanup();
 		return 1;
 	}
 	if(cfg->tls_engine_kpass_sha1 && mosquitto_string_option(mosq, MOSQ_OPT_TLS_ENGINE_KPASS_SHA1, cfg->tls_engine_kpass_sha1)){
 		err_printf(cfg, "Error: Problem setting TLS engine key pass sha, is it a 40 character hex string?\n");
-		mosquitto_lib_cleanup();
 		return 1;
 	}
 	if(cfg->tls_alpn && mosquitto_string_option(mosq, MOSQ_OPT_TLS_ALPN, cfg->tls_alpn)){
 		err_printf(cfg, "Error: Problem setting TLS ALPN protocol.\n");
-		mosquitto_lib_cleanup();
 		return 1;
 	}
-#  ifdef FINAL_WITH_TLS_PSK
-	if(cfg->psk && mosquitto_tls_psk_set(mosq, cfg->psk, cfg->psk_identity, NULL)){
-		err_printf(cfg, "Error: Problem setting TLS-PSK options.\n");
-		mosquitto_lib_cleanup();
-		return 1;
-	}
-#  endif
-	if((cfg->tls_version || cfg->ciphers) && mosquitto_tls_opts_set(mosq, 1, cfg->tls_version, cfg->ciphers)){
+	if((cfg->tls_version || cfg->ciphers) && mosquitto_tls_opts_set(mosq, !cfg->insecure, cfg->tls_version, cfg->ciphers)){
 		err_printf(cfg, "Error: Problem setting TLS options, check the options are valid.\n");
-		mosquitto_lib_cleanup();
+		return 1;
+	}
+	return MOSQ_ERR_SUCCESS;
+}
+#endif
+
+
+int client_opts_set(struct mosquitto *mosq, struct mosq_config *cfg)
+{
+#if defined(WITH_SOCKS)
+	int rc;
+#endif
+
+	mosquitto_int_option(mosq, MOSQ_OPT_PROTOCOL_VERSION, cfg->protocol_version);
+	mosquitto_int_option(mosq, MOSQ_OPT_TRANSPORT, cfg->transport);
+
+	if(cfg->will_topic && mosquitto_will_set_v5(mosq, cfg->will_topic,
+				cfg->will_payloadlen, cfg->will_payload, cfg->will_qos,
+				cfg->will_retain, cfg->will_props)){
+
+		err_printf(cfg, "Error: Problem setting will.\n");
+		return 1;
+	}
+	cfg->will_props = NULL;
+
+	if((cfg->username || cfg->password) && mosquitto_username_pw_set(mosq, cfg->username, cfg->password)){
+		err_printf(cfg, "Error: Problem setting username and/or password.\n");
+		return 1;
+	}
+#ifdef WITH_TLS
+	if(client_tls_opts_set(mosq, cfg)){
 		return 1;
 	}
 #endif
@@ -1297,7 +1409,6 @@ int client_opts_set(struct mosquitto *mosq, struct mosq_config *cfg)
 	if(cfg->socks5_host){
 		rc = mosquitto_socks5_set(mosq, cfg->socks5_host, cfg->socks5_port, cfg->socks5_username, cfg->socks5_password);
 		if(rc){
-			mosquitto_lib_cleanup();
 			return rc;
 		}
 	}
@@ -1305,16 +1416,22 @@ int client_opts_set(struct mosquitto *mosq, struct mosq_config *cfg)
 	if(cfg->tcp_nodelay){
 		mosquitto_int_option(mosq, MOSQ_OPT_TCP_NODELAY, 1);
 	}
+
+	if(cfg->msg_count > 0 && cfg->msg_count < 20){
+		/* 20 is the default "receive maximum"
+		 * If we don't set this, then we can receive > msg_count messages
+		 * before we quit.*/
+		mosquitto_int_option(mosq, MOSQ_OPT_RECEIVE_MAXIMUM, cfg->msg_count);
+	}
 	return MOSQ_ERR_SUCCESS;
 }
 
-int client_id_generate(struct mosq_config *cfg)
+int clientid_generate(struct mosq_config *cfg)
 {
 	if(cfg->id_prefix){
 		cfg->id = malloc(strlen(cfg->id_prefix)+10);
 		if(!cfg->id){
 			err_printf(cfg, "Error: Out of memory.\n");
-			mosquitto_lib_cleanup();
 			return 1;
 		}
 		snprintf(cfg->id, strlen(cfg->id_prefix)+10, "%s%d", cfg->id_prefix, getpid());
@@ -1331,6 +1448,10 @@ int client_connect(struct mosquitto *mosq, struct mosq_config *cfg)
 #endif
 	int rc;
 	int port;
+
+#ifndef WIN32
+	signal(SIGPIPE, SIG_IGN);
+#endif
 
 	if(cfg->port == PORT_UNDEFINED){
 #ifdef WITH_TLS
@@ -1379,7 +1500,7 @@ int client_connect(struct mosquitto *mosq, struct mosq_config *cfg)
 /* Convert %25 -> %, %3a, %3A -> :, %40 -> @ */
 static int mosquitto__urldecode(char *str)
 {
-	int i, j;
+	size_t i, j;
 	size_t len;
 	if(!str) return 0;
 
@@ -1425,11 +1546,11 @@ static int mosquitto__parse_socks_url(struct mosq_config *cfg, char *url)
 	char *str;
 	size_t i;
 	char *username = NULL, *password = NULL, *host = NULL, *port = NULL;
-	char *username_or_host = NULL;
 	size_t start;
 	size_t len;
-	bool have_auth = false;
+	bool in_ipv6_address = false;
 	int port_int;
+	char *auth_at;
 
 	if(!strncmp(url, "socks5h://", strlen("socks5h://"))){
 		str = url + strlen("socks5h://");
@@ -1438,22 +1559,96 @@ static int mosquitto__parse_socks_url(struct mosq_config *cfg, char *url)
 		return 1;
 	}
 
-	// socks5h://username:password@host:1883
-	// socks5h://username:password@host
-	// socks5h://username@host:1883
-	// socks5h://username@host
-	// socks5h://host:1883
-	// socks5h://host
+	/* socks5h://username:password@host:1883
+	 * socks5h://username:password@host
+	 * socks5h://username@host:1883
+	 * socks5h://username@host
+	 * socks5h://host:1883
+	 * socks5h://host
+	 */
+
+	/* Parse credentials */
+	start = 0;
+	auth_at = strchr(str, '@');
+	if(auth_at){
+		for(i=0; &str[i] != auth_at; i++){
+			if(str[i] == ':'){
+				if(i == start){
+					goto cleanup;
+				}
+				len = i-start;
+				if(username){
+					err_printf(cfg, "Error: Username cannot contain ':'.\n");
+					goto cleanup;
+				}
+				username = malloc(len + 1);
+				if(!username){
+					err_printf(cfg, "Error: Out of memory.\n");
+					goto cleanup;
+				}
+				memcpy(username, &(str[start]), len);
+				username[len] = '\0';
+				start = i+1;
+			}
+		}
+		if(username){
+			len = i-start;
+			password = malloc(len + 1);
+			if(!password){
+				err_printf(cfg, "Error: Out of memory.\n");
+				goto cleanup;
+			}
+			memcpy(password, &(str[start]), len);
+			password[len] = '\0';
+		}else{
+			len = i-start;
+			username = malloc(len + 1);
+			if(!username){
+				err_printf(cfg, "Error: Out of memory.\n");
+				goto cleanup;
+			}
+			memcpy(username, &(str[start]), len);
+			username[len] = '\0';
+		}
+		str = auth_at + 1;
+	}
 
 	start = 0;
 	for(i=0; i<strlen(str); i++){
-		if(str[i] == ':'){
-			if(i == start){
+		if(str[i] == '['){
+			if(host){
+				err_printf(cfg, "Error: Duplicate IPv6 address.\n");
 				goto cleanup;
 			}
-			if(have_auth){
-				/* Have already seen a @ , so this must be of form
-				 * socks5h://username[:password]@host:port */
+			in_ipv6_address = true;
+			start = i+1;
+		}else if(str[i] == ']'){
+			if(host){
+				err_printf(cfg, "Error: Duplicate IPv6 address.\n");
+				goto cleanup;
+			}
+			in_ipv6_address = false;
+
+			len = i-start;
+			host = malloc(len + 1);
+			if(!host){
+				err_printf(cfg, "Error: Out of memory.\n");
+				goto cleanup;
+			}
+			memcpy(host, &(str[start]), len);
+			host[len] = '\0';
+			if(str[i+1] == ':'){
+				start = i+2;
+				i++;
+			}else{
+				start = i+1;
+			}
+		}else if(str[i] == ':'){
+			if(in_ipv6_address){
+				/* Normal IPv6 separator */
+			}else{
+				/* host:port separator */
+
 				if(host){
 					/* Already seen a host, must be malformed. */
 					goto cleanup;
@@ -1467,77 +1662,16 @@ static int mosquitto__parse_socks_url(struct mosq_config *cfg, char *url)
 				memcpy(host, &(str[start]), len);
 				host[len] = '\0';
 				start = i+1;
-			}else if(!username_or_host){
-				/* Haven't seen a @ before, so must be of form
-				 * socks5h://host:port or
-				 * socks5h://username:password@host[:port] */
-				len = i-start;
-				username_or_host = malloc(len + 1);
-				if(!username_or_host){
-					err_printf(cfg, "Error: Out of memory.\n");
-					goto cleanup;
-				}
-				memcpy(username_or_host, &(str[start]), len);
-				username_or_host[len] = '\0';
-				start = i+1;
-			}
-		}else if(str[i] == '@'){
-			if(i == start){
-				goto cleanup;
-			}
-			have_auth = true;
-			if(username_or_host){
-				/* Must be of form socks5h://username:password@... */
-				username = username_or_host;
-				username_or_host = NULL;
-
-				len = i-start;
-				password = malloc(len + 1);
-				if(!password){
-					err_printf(cfg, "Error: Out of memory.\n");
-					goto cleanup;
-				}
-				memcpy(password, &(str[start]), len);
-				password[len] = '\0';
-				start = i+1;
-			}else{
-				/* Haven't seen a : yet, so must be of form
-				 * socks5h://username@... */
-				if(username){
-					/* Already got a username, must be malformed. */
-					goto cleanup;
-				}
-				len = i-start;
-				username = malloc(len + 1);
-				if(!username){
-					err_printf(cfg, "Error: Out of memory.\n");
-					goto cleanup;
-				}
-				memcpy(username, &(str[start]), len);
-				username[len] = '\0';
-				start = i+1;
 			}
 		}
 	}
 
-	/* Deal with remainder */
+	/* Deal with remainder - either the port, or the host */
 	if(i > start){
 		len = i-start;
 		if(host){
 			/* Have already seen a @ , so this must be of form
 			 * socks5h://username[:password]@host:port */
-			port = malloc(len + 1);
-			if(!port){
-				err_printf(cfg, "Error: Out of memory.\n");
-				goto cleanup;
-			}
-			memcpy(port, &(str[start]), len);
-			port[len] = '\0';
-		}else if(username_or_host){
-			/* Haven't seen a @ before, so must be of form
-			 * socks5h://host:port */
-			host = username_or_host;
-			username_or_host = NULL;
 			port = malloc(len + 1);
 			if(!port){
 				err_printf(cfg, "Error: Out of memory.\n");
@@ -1585,7 +1719,6 @@ static int mosquitto__parse_socks_url(struct mosq_config *cfg, char *url)
 
 	return 0;
 cleanup:
-	free(username_or_host);
 	free(username);
 	free(password);
 	free(host);
@@ -1605,3 +1738,22 @@ void err_printf(const struct mosq_config *cfg, const char *fmt, ...)
 	va_end(va);
 }
 
+#ifdef WITH_TLS
+static void tls_keylog_callback(const SSL *ssl, const char *line)
+{
+	struct mosq_config *cfg;
+	FILE *fptr;
+
+	UNUSED(ssl);
+
+	cfg = SSL_CTX_get_ex_data(SSL_get_SSL_CTX(ssl), tls_ex_index_cfg);
+
+	if(cfg && cfg->tls_keylog){
+		fptr = fopen(cfg->tls_keylog, "at");
+		if(fptr){
+			fprintf(fptr, "%s\n", line);
+			fclose(fptr);
+		}
+	}
+}
+#endif

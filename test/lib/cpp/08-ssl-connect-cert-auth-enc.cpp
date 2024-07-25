@@ -1,14 +1,19 @@
+#include <cassert>
 #include <cstring>
-#include <mosquittopp.h>
+#include <mosquitto/libmosquittopp.h>
+#include "path_helper.h"
 
 static int run = -1;
 
 static int password_callback(char* buf, int size, int rwflag, void* userdata)
 {
-	strncpy(buf, "password", size);
+	(void)rwflag;
+	(void)userdata;
+
+	strncpy(buf, "password", (size_t )size);
 	buf[size-1] = '\0';
 
-	return strlen(buf);
+	return (int)strlen(buf);
 }
 
 class mosquittopp_test : public mosqpp::mosquittopp
@@ -41,23 +46,30 @@ void mosquittopp_test::on_disconnect(int rc)
 
 int main(int argc, char *argv[])
 {
-	struct mosquittopp_test *mosq;
+	mosquittopp_test *mosq;
 
+	assert(argc == 2);
 	int port = atoi(argv[1]);
 
 	mosqpp::lib_init();
 
 	mosq = new mosquittopp_test("08-ssl-connect-crt-auth-enc");
 
-	mosq->tls_opts_set(1, "tlsv1", NULL);
-	//mosq->tls_set("../ssl/test-ca.crt", NULL, "../ssl/client.crt", "../ssl/client.key");
-	mosq->tls_set("../ssl/all-ca.crt", NULL, "../ssl/client-encrypted.crt", "../ssl/client-encrypted.key", password_callback);
+	char cafile[4096];
+	cat_sourcedir_with_relpath(cafile, "/../../ssl/test-root-ca.crt");
+	char capath[4096];
+	cat_sourcedir_with_relpath(capath, "/../../ssl/certs");
+	char certfile[4096];
+	cat_sourcedir_with_relpath(certfile, "/../../ssl/client.crt");
+	char keyfile[4096];
+	cat_sourcedir_with_relpath(keyfile, "/../../ssl/client.key");
+
+	mosq->tls_set(cafile, NULL, certfile, keyfile, password_callback);
 	mosq->connect("localhost", port, 60);
 
 	while(run == -1){
 		mosq->loop();
 	}
-	delete mosq;
 
 	delete mosq;
 	mosqpp::lib_cleanup();

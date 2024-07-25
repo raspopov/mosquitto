@@ -1,15 +1,17 @@
 /*
-Copyright (c) 2012-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2012-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -33,8 +35,9 @@ Contributors:
 #  include <sys/stat.h>
 #endif
 
-#define MAX_BUFFER_LEN 65536
-#define SALT_LEN 12
+#include "get_password.h"
+
+#define MAX_BUFFER_LEN 65500
 
 void get_password__reset_term(void)
 {
@@ -76,22 +79,21 @@ static int gets_quiet(char *s, int len)
 
 	return 0;
 #else
-	struct termios ts_quiet, ts_orig;
+	struct termios ts_quiet;
 	char *rs;
 
 	memset(s, 0, (size_t)len);
-	tcgetattr(0, &ts_orig);
-	ts_quiet = ts_orig;
+	tcgetattr(0, &ts_quiet);
 	ts_quiet.c_lflag &= (unsigned int)(~(ECHO | ICANON));
 	tcsetattr(0, TCSANOW, &ts_quiet);
 
 	rs = fgets(s, len, stdin);
-	tcsetattr(0, TCSANOW, &ts_orig);
+	get_password__reset_term();
 
 	if(!rs){
 		return 1;
 	}else{
-		while(s[strlen(s)-1] == 10 || s[strlen(s)-1] == 13){
+		while(strlen(s) > 0 && (s[strlen(s)-1] == 10 || s[strlen(s)-1] == 13)){
 			s[strlen(s)-1] = 0;
 		}
 		if(strlen(s) == 0){
@@ -133,7 +135,7 @@ int get_password(const char *prompt, const char *verify_prompt, bool quiet, char
 			if(!quiet){
 				fprintf(stderr, "Error: Passwords do not match.\n");
 			}
-			return 1;
+			return 2;
 		}
 	}
 

@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2009-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2009-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
@@ -9,6 +9,8 @@ The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
 
 Contributors:
    Roger Light - initial implementation and documentation.
@@ -43,17 +45,17 @@ Contributors:
 
 #ifdef WITH_BROKER
 #include "mosquitto_broker_internal.h"
+#else
+#  include "callbacks.h"
 #endif
 
 #include "mosquitto.h"
-#include "memory_mosq.h"
 #include "net_mosq.h"
 #include "send_mosq.h"
-#include "time_mosq.h"
 #include "tls_mosq.h"
 #include "util_mosq.h"
 
-#ifdef WITH_WEBSOCKETS
+#if defined(WITH_WEBSOCKETS) && WITH_WEBSOCKETS == WS_IS_LWS
 #include <libwebsockets.h>
 #endif
 
@@ -65,7 +67,7 @@ int mosquitto__check_keepalive(struct mosquitto *mosq)
 #ifndef WITH_BROKER
 	int rc;
 #endif
-	int state;
+	enum mosquitto_client_state state;
 
 	assert(mosq);
 #ifdef WITH_BROKER
@@ -77,10 +79,10 @@ int mosquitto__check_keepalive(struct mosquitto *mosq)
 #if defined(WITH_BROKER) && defined(WITH_BRIDGE)
 	/* Check if a lazy bridge should be timed out due to idle. */
 	if(mosq->bridge && mosq->bridge->start_type == bst_lazy
-				&& mosq->sock != INVALID_SOCKET
+				&& net__is_connected(mosq)
 				&& now - mosq->next_msg_out - mosq->keepalive >= mosq->bridge->idle_timeout){
 
-		log__printf(NULL, MOSQ_LOG_NOTICE, "Bridge connection %s has exceeded idle timeout, disconnecting.", mosq->id);
+		log__printf(mosq, MOSQ_LOG_NOTICE, "Bridge connection %s has exceeded idle timeout, disconnecting.", mosq->id);
 		net__socket_close(mosq);
 		return MOSQ_ERR_SUCCESS;
 	}
@@ -89,7 +91,7 @@ int mosquitto__check_keepalive(struct mosquitto *mosq)
 	next_msg_out = mosq->next_msg_out;
 	last_msg_in = mosq->last_msg_in;
 	pthread_mutex_unlock(&mosq->msgtime_mutex);
-	if(mosq->keepalive && mosq->sock != INVALID_SOCKET &&
+	if(mosq->keepalive && net__is_connected(mosq) &&
 			(now >= next_msg_out || now - last_msg_in >= mosq->keepalive)){
 
 		state = mosquitto__get_state(mosq);
@@ -102,6 +104,11 @@ int mosquitto__check_keepalive(struct mosquitto *mosq)
 			pthread_mutex_unlock(&mosq->msgtime_mutex);
 		}else{
 #ifdef WITH_BROKER
+#  ifdef WITH_BRIDGE
+			if(mosq->bridge){
+				context__send_will(mosq);
+			}
+#  endif
 			net__socket_close(mosq);
 #else
 			net__socket_close(mosq);
@@ -111,18 +118,7 @@ int mosquitto__check_keepalive(struct mosquitto *mosq)
 			}else{
 				rc = MOSQ_ERR_KEEPALIVE;
 			}
-			pthread_mutex_lock(&mosq->callback_mutex);
-			if(mosq->on_disconnect){
-				mosq->in_callback = true;
-				mosq->on_disconnect(mosq, mosq->userdata, rc);
-				mosq->in_callback = false;
-			}
-			if(mosq->on_disconnect_v5){
-				mosq->in_callback = true;
-				mosq->on_disconnect_v5(mosq, mosq->userdata, rc, NULL);
-				mosq->in_callback = false;
-			}
-			pthread_mutex_unlock(&mosq->callback_mutex);
+			callback__on_disconnect(mosq, rc, NULL);
 
 			return rc;
 #endif
@@ -162,7 +158,7 @@ int mosquitto__hex2bin_sha1(const char *hex, unsigned char **bin)
 		return MOSQ_ERR_INVAL;
 	}
 
-	sha = mosquitto__malloc(SHA_DIGEST_LENGTH);
+	sha = mosquitto_malloc(SHA_DIGEST_LENGTH);
 	if(!sha){
 		return MOSQ_ERR_NOMEM;
 	}
@@ -176,15 +172,17 @@ int mosquitto__hex2bin(const char *hex, unsigned char *bin, int bin_max_len)
 	BIGNUM *bn = NULL;
 	int len;
 	int leading_zero = 0;
-	int start = 0;
 	size_t i = 0;
 
 	/* Count the number of leading zero */
 	for(i=0; i<strlen(hex); i=i+2) {
 		if(strncmp(hex + i, "00", 2) == 0) {
-			leading_zero++;
+			if(leading_zero >= bin_max_len){
+				return 0;
+			}
 			/* output leading zero to bin */
-			bin[start++] = 0;
+			bin[leading_zero] = 0;
+			leading_zero++;
 		}else{
 			break;
 		}
@@ -235,42 +233,6 @@ void util__decrement_send_quota(struct mosquitto *mosq)
 }
 
 
-int util__random_bytes(void *bytes, int count)
-{
-	int rc = MOSQ_ERR_UNKNOWN;
-
-#ifdef WITH_TLS
-	if(RAND_bytes(bytes, count) == 1){
-		rc = MOSQ_ERR_SUCCESS;
-	}
-#elif defined(HAVE_GETRANDOM)
-	if(getrandom(bytes, (size_t)count, 0) == count){
-		rc = MOSQ_ERR_SUCCESS;
-	}
-#elif defined(WIN32)
-	HCRYPTPROV provider;
-
-	if(!CryptAcquireContext(&provider, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)){
-		return MOSQ_ERR_UNKNOWN;
-	}
-
-	if(CryptGenRandom(provider, count, bytes)){
-		rc = MOSQ_ERR_SUCCESS;
-	}
-
-	CryptReleaseContext(provider, 0);
-#else
-	int i;
-
-	for(i=0; i<count; i++){
-		((uint8_t *)bytes)[i] = (uint8_t )(random()&0xFF);
-	}
-	rc = MOSQ_ERR_SUCCESS;
-#endif
-	return rc;
-}
-
-
 int mosquitto__set_state(struct mosquitto *mosq, enum mosquitto_client_state state)
 {
 	pthread_mutex_lock(&mosq->state_mutex);
@@ -295,3 +257,23 @@ enum mosquitto_client_state mosquitto__get_state(struct mosquitto *mosq)
 
 	return state;
 }
+
+#ifndef WITH_BROKER
+void mosquitto__set_request_disconnect(struct mosquitto *mosq, bool request_disconnect)
+{
+	pthread_mutex_lock(&mosq->state_mutex);
+	mosq->request_disconnect = request_disconnect;
+	pthread_mutex_unlock(&mosq->state_mutex);
+}
+
+bool mosquitto__get_request_disconnect(struct mosquitto *mosq)
+{
+	bool request_disconnect;
+
+	pthread_mutex_lock(&mosq->state_mutex);
+	request_disconnect = mosq->request_disconnect;
+	pthread_mutex_unlock(&mosq->state_mutex);
+
+	return request_disconnect;
+}
+#endif

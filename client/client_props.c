@@ -1,15 +1,17 @@
 /*
-Copyright (c) 2018-2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2018-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
 and Eclipse Distribution License v1.0 which accompany this distribution.
- 
+
 The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
- 
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
@@ -32,7 +34,6 @@ Contributors:
 #endif
 
 #include "mosquitto.h"
-#include "mqtt_protocol.h"
 #include "client_shared.h"
 
 enum prop_type
@@ -77,18 +78,18 @@ int cfg_parse_property(struct mosq_config *cfg, int argc, char *argv[], int *idx
 
 	cmdname = argv[*idx];
 	if(mosquitto_string_to_command(cmdname, &cmd)){
-		fprintf(stderr, "Error: Invalid command given in --property argument.\n\n");
+		fprintf(stderr, "Error: Invalid command %s given in --property argument.\n\n", cmdname);
 		return MOSQ_ERR_INVAL;
 	}
 
 	propname = argv[(*idx)+1];
 	if(mosquitto_string_to_property_info(propname, &identifier, &type)){
-		fprintf(stderr, "Error: Invalid property name given in --property argument.\n\n");
+		fprintf(stderr, "Error: Invalid property name %s given in --property argument.\n\n", propname);
 		return MOSQ_ERR_INVAL;
 	}
 
 	if(mosquitto_property_check_command(cmd, identifier)){
-		fprintf(stderr, "Error: %s property not allow for %s in --property argument.\n\n", propname, cmdname);
+		fprintf(stderr, "Error: %s property not allowed for %s in --property argument.\n\n", propname, cmdname);
 		return MOSQ_ERR_INVAL;
 	}
 
@@ -107,7 +108,6 @@ int cfg_parse_property(struct mosq_config *cfg, int argc, char *argv[], int *idx
 		(*idx) += 2;
 	}
 
-	
 	switch(cmd){
 		case CMD_CONNECT:
 			proplist = &cfg->connect_props;
@@ -125,10 +125,6 @@ int cfg_parse_property(struct mosq_config *cfg, int argc, char *argv[], int *idx
 			break;
 
 		case CMD_SUBSCRIBE:
-			if(identifier != MQTT_PROP_SUBSCRIPTION_IDENTIFIER && identifier != MQTT_PROP_USER_PROPERTY){
-				fprintf(stderr, "Error: %s property not supported for %s in --property argument.\n\n", propname, cmdname);
-				return MOSQ_ERR_NOT_SUPPORTED;
-			}
 			proplist = &cfg->subscribe_props;
 			break;
 
@@ -217,4 +213,3 @@ int cfg_parse_property(struct mosq_config *cfg, int argc, char *argv[], int *idx
 	}
 	return MOSQ_ERR_SUCCESS;
 }
-

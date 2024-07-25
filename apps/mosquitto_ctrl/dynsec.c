@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2020-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
@@ -10,18 +10,32 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
-#include <cJSON.h>
+#include "config.h"
+
+#include <cjson/cJSON.h>
+#define CJSON_VERSION_FULL (CJSON_VERSION_MAJOR*1000000+CJSON_VERSION_MINOR*1000+CJSON_VERSION_PATCH)
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef WIN32
+#  include <errno.h>
+#  include <fcntl.h>
+#  include <strings.h>
+#endif
+
 #include "mosquitto_ctrl.h"
 #include "mosquitto.h"
-#include "password_mosq.h"
+#include "json_help.h"
 #include "get_password.h"
+
+#define MAX_STRING_LEN 4096
 
 void dynsec__print_usage(void)
 {
@@ -41,6 +55,8 @@ void dynsec__print_usage(void)
 	printf("Create a new client:         createClient      <username> [-c clientid] [-p password]\n");
 	printf("Delete a client:             deleteClient      <username>\n");
 	printf("Set a client password:       setClientPassword <username> [password]\n");
+	printf("Set a client password on an existing file:\n");
+	printf("    mosquitto_ctrl -f <file> dynsec setClientPassword <username> <password>\n");
 	printf("Set a client id:             setClientId       <username> [clientid]\n");
 	printf("Add a role to a client:      addClientRole     <username> <rolename> [priority]\n");
 	printf("    Higher priority (larger numerical value) roles are evaluated first.\n");
@@ -75,14 +91,8 @@ void dynsec__print_usage(void)
 	printf("acltype:                     publishClientSend|publishClientReceive\n");
 	printf("                              |subscribeLiteral|subscribePattern\n");
 	printf("                              |unsubscribeLiteral|unsubscribePattern\n");
-}
-
-cJSON *cJSON_AddIntToObject(cJSON * const object, const char * const name, int number)
-{
-	char buf[30];
-
-	snprintf(buf, sizeof(buf), "%d", number);
-	return cJSON_AddRawToObject(object, name, buf);
+	printf("\nFor more information see:\n");
+	printf("    https://mosquitto.org/documentation/dynamic-security/\n\n");
 }
 
 /* ################################################################
@@ -93,7 +103,7 @@ cJSON *cJSON_AddIntToObject(cJSON * const object, const char * const name, int n
 
 static void print_list(cJSON *j_response, const char *arrayname, const char *keyname)
 {
-	cJSON *j_data, *j_array, *j_elem, *j_name;
+	cJSON *j_data, *j_array, *j_elem;
 
 	j_data = cJSON_GetObjectItem(j_response, "data");
 	if(j_data == NULL){
@@ -109,21 +119,67 @@ static void print_list(cJSON *j_response, const char *arrayname, const char *key
 
 	cJSON_ArrayForEach(j_elem, j_array){
 		if(cJSON_IsObject(j_elem)){
-			j_name = cJSON_GetObjectItem(j_elem, keyname);
-			if(j_name && cJSON_IsString(j_name)){
-				printf("%s\n", j_name->valuestring);
+            const char *stmp;
+			if(json_get_string(j_elem, keyname, &stmp, false) == MOSQ_ERR_SUCCESS){
+				printf("%s\n", stmp);
 			}
-		}else if(cJSON_IsString(j_elem)){
+		}else if(cJSON_IsString(j_elem) && j_elem->valuestring){
 			printf("%s\n", j_elem->valuestring);
 		}
+	}
+}
+
+static void print_json_value(cJSON *value, const char *null_value)
+{
+	if(value){
+		if(cJSON_IsString(value)){
+			if(value->valuestring){
+				printf("%s", value->valuestring);
+			}
+		}else{
+			char buffer[MAX_STRING_LEN];
+			cJSON_PrintPreallocated(value, buffer, sizeof(buffer), 0);
+			printf("%s", buffer);
+		}
+	}else if(null_value){
+		printf("%s",null_value);
+	}
+}
+
+static void print_json_array(cJSON *j_list, int slen, const char *label, const char *element_name, const char *optional_element_name, const char *optional_element_null_value)
+{
+	cJSON *j_elem;
+
+	if(j_list && cJSON_IsArray(j_list)){
+		cJSON_ArrayForEach(j_elem, j_list){
+			if(cJSON_IsObject(j_elem)){
+				const char *stmp;
+
+				if(json_get_string(j_elem, element_name, &stmp, false) != MOSQ_ERR_SUCCESS){
+					continue;
+				}
+				printf("%-*s %s", (int)slen, label, stmp);
+				if(optional_element_name){
+					printf(" (%s: ", optional_element_name);
+					print_json_value(cJSON_GetObjectItem(j_elem,optional_element_name),optional_element_null_value);
+					printf(")");
+				}
+			}else if(cJSON_IsString(j_elem) && j_elem->valuestring){
+				printf("%-*s %s", (int)slen, label, j_elem->valuestring);
+			}
+			label = "";
+			printf("\n");
+		}
+	}else{
+		printf("%s\n", label);
 	}
 }
 
 
 static void print_client(cJSON *j_response)
 {
-	cJSON *j_data, *j_client, *j_array, *j_elem, *jtmp;
-	bool first;
+	cJSON *j_data, *j_client, *jtmp;
+	const int label_width = strlen( "Connections:");
 
 	j_data = cJSON_GetObjectItem(j_response, "data");
 	if(j_data == NULL || !cJSON_IsObject(j_data)){
@@ -137,80 +193,36 @@ static void print_client(cJSON *j_response)
 		return;
 	}
 
-	jtmp = cJSON_GetObjectItem(j_client, "username");
-	if(jtmp == NULL || !cJSON_IsString(jtmp)){
+	const char *username;
+	if(json_get_string(j_client, "username", &username, false) != MOSQ_ERR_SUCCESS){
 		fprintf(stderr, "Error: Invalid response from server.\n");
 		return;
 	}
-	printf("Username: %s\n", jtmp->valuestring);
+	printf("%-*s %s\n",  label_width, "Username:", username);
 
-	jtmp = cJSON_GetObjectItem(j_client, "clientid");
-	if(jtmp && cJSON_IsString(jtmp)){
-		printf("Clientid: %s\n", jtmp->valuestring);
+	const char *clientid;
+	if(json_get_string(j_client, "clientid", &clientid, false) == MOSQ_ERR_SUCCESS){
+		printf("%-*s %s\n",  label_width, "Clientid:", clientid);
 	}else{
 		printf("Clientid:\n");
 	}
 
 	jtmp = cJSON_GetObjectItem(j_client, "disabled");
 	if(jtmp && cJSON_IsBool(jtmp)){
-		printf("Disabled: %s\n", cJSON_IsTrue(jtmp)?"true":"false");
+		printf("%-*s %s\n",  label_width, "Disabled:", cJSON_IsTrue(jtmp)?"true":"false");
 	}
 
-	j_array = cJSON_GetObjectItem(j_client, "roles");
-	if(j_array && cJSON_IsArray(j_array)){
-		first = true;
-		cJSON_ArrayForEach(j_elem, j_array){
-			jtmp = cJSON_GetObjectItem(j_elem, "rolename");
-			if(jtmp && cJSON_IsString(jtmp)){
-				if(first){
-					first = false;
-					printf("Roles:    %s", jtmp->valuestring);
-				}else{
-					printf("          %s", jtmp->valuestring);
-				}
-				jtmp = cJSON_GetObjectItem(j_elem, "priority");
-				if(jtmp && cJSON_IsNumber(jtmp)){
-					printf(" (priority: %d)", (int)jtmp->valuedouble);
-				}else{
-					printf(" (priority: -1)");
-				}
-				printf("\n");
-			}
-		}
-	}else{
-		printf("Roles:\n");
-	}
-	j_array = cJSON_GetObjectItem(j_client, "groups");
-	if(j_array && cJSON_IsArray(j_array)){
-		first = true;
-		cJSON_ArrayForEach(j_elem, j_array){
-			jtmp = cJSON_GetObjectItem(j_elem, "groupname");
-			if(jtmp && cJSON_IsString(jtmp)){
-				if(first){
-					printf("Groups:   %s", jtmp->valuestring);
-					first = false;
-				}else{
-					printf("          %s", jtmp->valuestring);
-				}
-				jtmp = cJSON_GetObjectItem(j_elem, "priority");
-				if(jtmp && cJSON_IsNumber(jtmp)){
-					printf(" (priority: %d)", (int)jtmp->valuedouble);
-				}else{
-					printf(" (priority: -1)");
-				}
-				printf("\n");
-			}
-		}
-	}else{
-		printf("Groups:\n");
-	}
+	print_json_array(cJSON_GetObjectItem(j_client, "roles"), label_width, "Roles:",  "rolename", "priority", "-1");
+	print_json_array(cJSON_GetObjectItem(j_client, "groups"), label_width, "Groups:", "groupname", "priority", "-1");
+	print_json_array(cJSON_GetObjectItem(j_client, "connections"), label_width, "Connections:", "address", NULL, NULL);
 }
 
 
 static void print_group(cJSON *j_response)
 {
-	cJSON *j_data, *j_group, *j_array, *j_elem, *jtmp;
-	bool first;
+	cJSON *j_data, *j_group;
+	int label_width = strlen("Groupname:");
+	const char *groupname;
 
 	j_data = cJSON_GetObjectItem(j_response, "data");
 	if(j_data == NULL || !cJSON_IsObject(j_data)){
@@ -224,51 +236,14 @@ static void print_group(cJSON *j_response)
 		return;
 	}
 
-	jtmp = cJSON_GetObjectItem(j_group, "groupname");
-	if(jtmp == NULL || !cJSON_IsString(jtmp)){
+	if(json_get_string(j_group, "groupname", &groupname, false) != MOSQ_ERR_SUCCESS){
 		fprintf(stderr, "Error: Invalid response from server.\n");
 		return;
 	}
-	printf("Groupname: %s\n", jtmp->valuestring);
+	printf("Groupname: %s\n", groupname);
 
-	j_array = cJSON_GetObjectItem(j_group, "roles");
-	if(j_array && cJSON_IsArray(j_array)){
-		first = true;
-		cJSON_ArrayForEach(j_elem, j_array){
-			jtmp = cJSON_GetObjectItem(j_elem, "groupname");
-			if(jtmp && cJSON_IsString(jtmp)){
-				if(first){
-					first = false;
-					printf("Roles:  %s", jtmp->valuestring);
-				}else{
-					printf("    %s", jtmp->valuestring);
-				}
-				jtmp = cJSON_GetObjectItem(j_elem, "priority");
-				if(jtmp && cJSON_IsNumber(jtmp)){
-					printf(" (priority: %d)", (int)jtmp->valuedouble);
-				}else{
-					printf(" (priority: -1)");
-				}
-				printf("\n");
-			}
-		}
-	}
-
-	j_array = cJSON_GetObjectItem(j_group, "clients");
-	if(j_array && cJSON_IsArray(j_array)){
-		first = true;
-		cJSON_ArrayForEach(j_elem, j_array){
-			jtmp = cJSON_GetObjectItem(j_elem, "username");
-			if(jtmp && cJSON_IsString(jtmp)){
-				if(first){
-					first = false;
-					printf("Clients:   %s\n", jtmp->valuestring);
-				}else{
-					printf("           %s\n", jtmp->valuestring);
-				}
-			}
-		}
-	}
+	print_json_array(cJSON_GetObjectItem(j_group, "roles"), label_width, "Roles:",  "rolename", "priority", "-1");
+	print_json_array(cJSON_GetObjectItem(j_group, "clients"), label_width, "Clients:",  "username", NULL, NULL);
 }
 
 
@@ -289,33 +264,35 @@ static void print_role(cJSON *j_response)
 		return;
 	}
 
-	jtmp = cJSON_GetObjectItem(j_role, "rolename");
-	if(jtmp == NULL || !cJSON_IsString(jtmp)){
+	const char *rolename;
+	if(json_get_string(j_role, "rolename", &rolename, false) != MOSQ_ERR_SUCCESS){
 		fprintf(stderr, "Error: Invalid response from server.\n");
 		return;
 	}
-	printf("Rolename: %s\n", jtmp->valuestring);
+	printf("Rolename: %s\n", rolename);
 
 	j_array = cJSON_GetObjectItem(j_role, "acls");
 	if(j_array && cJSON_IsArray(j_array)){
 		first = true;
 		cJSON_ArrayForEach(j_elem, j_array){
-			jtmp = cJSON_GetObjectItem(j_elem, "acltype");
-			if(jtmp && cJSON_IsString(jtmp)){
+			const char *acltype;
+
+			if(json_get_string(j_elem, "acltype", &acltype, false) == MOSQ_ERR_SUCCESS){
 				if(first){
 					first = false;
-					printf("ACLs:     %-20s", jtmp->valuestring);
+					printf("ACLs:     %-20s", acltype);
 				}else{
-					printf("          %-20s", jtmp->valuestring);
+					printf("          %-20s", acltype);
 				}
 
 				jtmp = cJSON_GetObjectItem(j_elem, "allow");
 				if(jtmp && cJSON_IsBool(jtmp)){
 					printf(" : %s", cJSON_IsTrue(jtmp)?"allow":"deny ");
 				}
-				jtmp = cJSON_GetObjectItem(j_elem, "topic");
-				if(jtmp && cJSON_IsString(jtmp)){
-					printf(" : %s", jtmp->valuestring);
+
+				const char *topic;
+				if(json_get_string(j_elem, "topic", &topic, false) == MOSQ_ERR_SUCCESS){
+					printf(" : %s", topic);
 				}
 				jtmp = cJSON_GetObjectItem(j_elem, "priority");
 				if(jtmp && cJSON_IsNumber(jtmp)){
@@ -332,7 +309,8 @@ static void print_role(cJSON *j_response)
 
 static void print_anonymous_group(cJSON *j_response)
 {
-	cJSON *j_data, *j_group, *j_groupname;
+	cJSON *j_data, *j_group;
+	const char *groupname;
 
 	j_data = cJSON_GetObjectItem(j_response, "data");
 	if(j_data == NULL || !cJSON_IsObject(j_data)){
@@ -346,17 +324,16 @@ static void print_anonymous_group(cJSON *j_response)
 		return;
 	}
 
-	j_groupname = cJSON_GetObjectItem(j_group, "groupname");
-	if(j_groupname == NULL || !cJSON_IsString(j_groupname)){
+	if(json_get_string(j_group, "groupname", &groupname, false) != MOSQ_ERR_SUCCESS){
 		fprintf(stderr, "Error: Invalid response from server.\n");
 		return;
 	}
-	printf("%s\n", j_groupname->valuestring);
+	printf("%s\n", groupname);
 }
 
 static void print_default_acl_access(cJSON *j_response)
 {
-	cJSON *j_data, *j_acls, *j_acl, *j_acltype, *j_allow;
+	cJSON *j_data, *j_acls, *j_acl;
 
 	j_data = cJSON_GetObjectItem(j_response, "data");
 	if(j_data == NULL || !cJSON_IsObject(j_data)){
@@ -371,25 +348,32 @@ static void print_default_acl_access(cJSON *j_response)
 	}
 
 	cJSON_ArrayForEach(j_acl, j_acls){
-		j_acltype = cJSON_GetObjectItem(j_acl, "acltype");
-		j_allow = cJSON_GetObjectItem(j_acl, "allow");
+		const char *acltype;
+		bool allow;
 
-		if(j_acltype == NULL || !cJSON_IsString(j_acltype)
-				|| j_allow == NULL || !cJSON_IsBool(j_allow)
-				){
-			
+		if(json_get_string(j_acl, "acltype", &acltype, false) != MOSQ_ERR_SUCCESS
+				|| json_get_bool(j_acl, "allow", &allow, false, false) != MOSQ_ERR_SUCCESS){
+
 			fprintf(stderr, "Error: Invalid response from server.\n");
 			return;
 		}
-		printf("%-20s : %s\n", j_acltype->valuestring, cJSON_IsTrue(j_allow)?"allow":"deny");
+		printf("%-20s : %s\n", acltype, allow?"allow":"deny");
 	}
 }
 
 static void dynsec__payload_callback(struct mosq_ctrl *ctrl, long payloadlen, const void *payload)
 {
-	cJSON *tree, *j_responses, *j_response, *j_command, *j_error;
+	cJSON *tree, *j_responses, *j_response;
+	const char *command, *error;
 
+	UNUSED(ctrl);
+
+#if CJSON_VERSION_FULL < 1007013
+	UNUSED(payloadlen);
 	tree = cJSON_Parse(payload);
+#else
+	tree = cJSON_ParseWithLength(payload, (size_t)payloadlen);
+#endif
 	if(tree == NULL){
 		fprintf(stderr, "Error: Payload not JSON.\n");
 		return;
@@ -409,35 +393,33 @@ static void dynsec__payload_callback(struct mosq_ctrl *ctrl, long payloadlen, co
 		return;
 	}
 
-	j_command = cJSON_GetObjectItem(j_response, "command");
-	if(j_command == NULL){
+	if(json_get_string(j_response, "command", &command, false) != MOSQ_ERR_SUCCESS){
 		fprintf(stderr, "Error: Payload missing data.\n");
 		cJSON_Delete(tree);
 		return;
 	}
 
-	j_error = cJSON_GetObjectItem(j_response, "error");
-	if(j_error){
-		fprintf(stderr, "%s: Error: %s\n", j_command->valuestring, j_error->valuestring);
+	if(json_get_string(j_response, "error", &error, false) == MOSQ_ERR_SUCCESS){
+		fprintf(stderr, "%s: Error: %s.\n", command, error);
 	}else{
-		if(!strcasecmp(j_command->valuestring, "listClients")){
+		if(!strcasecmp(command, "listClients")){
 			print_list(j_response, "clients", "username");
-		}else if(!strcasecmp(j_command->valuestring, "listGroups")){
+		}else if(!strcasecmp(command, "listGroups")){
 			print_list(j_response, "groups", "groupname");
-		}else if(!strcasecmp(j_command->valuestring, "listRoles")){
+		}else if(!strcasecmp(command, "listRoles")){
 			print_list(j_response, "roles", "rolename");
-		}else if(!strcasecmp(j_command->valuestring, "getClient")){
+		}else if(!strcasecmp(command, "getClient")){
 			print_client(j_response);
-		}else if(!strcasecmp(j_command->valuestring, "getGroup")){
+		}else if(!strcasecmp(command, "getGroup")){
 			print_group(j_response);
-		}else if(!strcasecmp(j_command->valuestring, "getRole")){
+		}else if(!strcasecmp(command, "getRole")){
 			print_role(j_response);
-		}else if(!strcasecmp(j_command->valuestring, "getDefaultACLAccess")){
+		}else if(!strcasecmp(command, "getDefaultACLAccess")){
 			print_default_acl_access(j_response);
-		}else if(!strcasecmp(j_command->valuestring, "getAnonymousGroup")){
+		}else if(!strcasecmp(command, "getAnonymousGroup")){
 			print_anonymous_group(j_response);
 		}else{
-			//fprintf(stderr, "%s: Success\n", j_command->valuestring);
+			/* fprintf(stderr, "%s: Success\n", command); */
 		}
 	}
 	cJSON_Delete(tree);
@@ -452,6 +434,7 @@ static void dynsec__payload_callback(struct mosq_ctrl *ctrl, long payloadlen, co
 static int dynsec__set_default_acl_access(int argc, char *argv[], cJSON *j_command)
 {
 	char *acltype, *access;
+	bool b_access;
 	cJSON *j_acls, *j_acl;
 
 	if(argc == 2){
@@ -469,7 +452,11 @@ static int dynsec__set_default_acl_access(int argc, char *argv[], cJSON *j_comma
 		return MOSQ_ERR_INVAL;
 	}
 
-	if(strcasecmp(access, "allow") && strcasecmp(access, "deny")){
+	if(!strcasecmp(access, "allow")){
+		b_access = true;
+	}else if(!strcasecmp(access, "deny")){
+		b_access = false;
+	}else{
 		fprintf(stderr, "Error: access must be \"allow\" or \"deny\".\n");
 		return MOSQ_ERR_INVAL;
 	}
@@ -487,7 +474,7 @@ static int dynsec__set_default_acl_access(int argc, char *argv[], cJSON *j_comma
 	}
 	cJSON_AddItemToArray(j_acls, j_acl);
 	if(cJSON_AddStringToObject(j_acl, "acltype", acltype) == NULL
-			|| cJSON_AddStringToObject(j_acl, "access", access) == NULL
+			|| cJSON_AddBoolToObject(j_acl, "allow", b_access) == NULL
 			){
 
 		return MOSQ_ERR_NOMEM;
@@ -498,6 +485,9 @@ static int dynsec__set_default_acl_access(int argc, char *argv[], cJSON *j_comma
 
 static int dynsec__get_default_acl_access(int argc, char *argv[], cJSON *j_command)
 {
+	UNUSED(argc);
+	UNUSED(argv);
+
 	if(cJSON_AddStringToObject(j_command, "command", "getDefaultACLAccess") == NULL
 			){
 
@@ -570,48 +560,34 @@ static cJSON *init_add_role(const char *rolename)
 static cJSON *init_add_client(const char *username, const char *password, const char *rolename)
 {
 	cJSON *j_client, *j_roles, *j_role;
-	struct mosquitto_pw pw;
-	char *salt64 = NULL, *hash64 = NULL;
-	char buf[10];
+	struct mosquitto_pw *pw;
 
-	memset(&pw, 0, sizeof(pw));
-	pw.hashtype = pw_sha512_pbkdf2;
-
-	if(pw__hash(password, &pw, true, PW_DEFAULT_ITERATIONS) != 0){
-		return NULL;
-	}
-	if(base64__encode(pw.salt, sizeof(pw.salt), &salt64)
-		|| base64__encode(pw.password_hash, sizeof(pw.password_hash), &hash64)
-		){
-
-		fprintf(stderr, "dynsec init: Internal error while encoding password.\n");
-		free(salt64);
-		free(hash64);
+	if(mosquitto_pw_new(&pw, MOSQ_PW_DEFAULT) || mosquitto_pw_hash_encoded(pw, password)){
+		mosquitto_pw_cleanup(pw);
 		return NULL;
 	}
 
 	j_client = cJSON_CreateObject();
 	if(j_client == NULL){
-		free(salt64);
-		free(hash64);
+		mosquitto_pw_cleanup(pw);
 		return NULL;
 	}
 
-	snprintf(buf, sizeof(buf), "%d", PW_DEFAULT_ITERATIONS);
 	if(cJSON_AddStringToObject(j_client, "username", username) == NULL
 			|| cJSON_AddStringToObject(j_client, "textName", "Dynsec admin user") == NULL
-			|| cJSON_AddStringToObject(j_client, "password", hash64) == NULL
-			|| cJSON_AddStringToObject(j_client, "salt", salt64) == NULL
-			|| cJSON_AddRawToObject(j_client, "iterations", buf) == NULL
 			){
 
-		free(salt64);
-		free(hash64);
 		cJSON_Delete(j_client);
+		mosquitto_pw_cleanup(pw);
 		return NULL;
 	}
-	free(salt64);
-	free(hash64);
+
+	if(cJSON_AddStringToObject(j_client, "encoded_password", mosquitto_pw_get_encoded(pw)) == NULL){
+		cJSON_Delete(j_client);
+		mosquitto_pw_cleanup(pw);
+		return NULL;
+	}
+	mosquitto_pw_cleanup(pw);
 
 	j_roles = cJSON_CreateArray();
 	if(j_roles == NULL){
@@ -685,7 +661,7 @@ static cJSON *init_create(const char *username, const char *password, const char
 }
 
 /* mosquitto_ctrl dynsec init <filename> <admin-user> <admin-password> [role-name] */
-int dynsec_init(int argc, char *argv[])
+static int dynsec_init(int argc, char *argv[])
 {
 	char *filename;
 	char *admin_user;
@@ -717,18 +693,10 @@ int dynsec_init(int argc, char *argv[])
 		snprintf(verify_prompt, sizeof(verify_prompt), "Reenter password for %s: ", admin_user);
 		rc = get_password(prompt, verify_prompt, false, password, sizeof(password));
 		if(rc){
-			fprintf(stderr, "Error getting password.\n");
 			mosquitto_lib_cleanup();
-			return 1;
+			return -1;
 		}
 		admin_password = password;
-	}
-
-	fptr = fopen(filename, "rb");
-	if(fptr){
-		fclose(fptr);
-		fprintf(stderr, "dynsec init: '%s' already exists. Use --force to overwrite.\n", filename);
-		return -1;
 	}
 
 	tree = init_create(admin_user, admin_password, "admin");
@@ -739,7 +707,17 @@ int dynsec_init(int argc, char *argv[])
 	json_str = cJSON_Print(tree);
 	cJSON_Delete(tree);
 
-	fptr = fopen(filename, "wb");
+#ifdef WIN32
+	fptr = mosquitto_fopen(filename, "wb", true);
+#else
+	int fd = open(filename, O_CREAT | O_EXCL | O_WRONLY, 0640);
+	if(fd < 0){
+		free(json_str);
+		fprintf(stderr, "dynsec init: Unable to open '%s' for writing (%s).\n", filename, strerror(errno));
+		return -1;
+	}
+	fptr = fdopen(fd, "wb");
+#endif
 	if(fptr){
 		fprintf(fptr, "%s", json_str);
 		free(json_str);
@@ -780,6 +758,8 @@ int dynsec__main(int argc, char *argv[], struct mosq_ctrl *ctrl)
 		return -1;
 	}else if(!strcasecmp(argv[0], "init")){
 		return dynsec_init(argc-1, &argv[1]);
+	}else if(ctrl->cfg.data_file && !strcasecmp(argv[0], "setClientPassword")){
+		return dynsec_client__file_set_password(argc-1, &argv[1], ctrl->cfg.data_file);
 	}
 
 	/* The remaining commands need a network connection and JSON command. */
@@ -868,6 +848,8 @@ int dynsec__main(int argc, char *argv[], struct mosq_ctrl *ctrl)
 
 	}else{
 		fprintf(stderr, "Command '%s' not recognised.\n", argv[0]);
+		cJSON_Delete(j_tree);
+		j_tree = NULL;
 		return MOSQ_ERR_UNKNOWN;
 	}
 
@@ -878,6 +860,8 @@ int dynsec__main(int argc, char *argv[], struct mosq_ctrl *ctrl)
 			fprintf(stderr, "Error: Out of memory.\n");
 			return MOSQ_ERR_NOMEM;
 		}
+	}else{
+		cJSON_Delete(j_tree);
 	}
 	return rc;
 }

@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2010-2019 Roger Light <roger@atchoo.org>
+Copyright (c) 2010-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
@@ -10,19 +10,19 @@ The Eclipse Public License is available at
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
 
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
+
 Contributors:
    Roger Light - initial implementation and documentation.
 */
 
 #include "config.h"
 
-#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "mosquitto_broker_internal.h"
-#include "memory_mosq.h"
-#include "mqtt_protocol.h"
+#include "mosquitto/mqtt_protocol.h"
 #include "util_mosq.h"
 
 #include "utlist.h"
@@ -60,7 +60,6 @@ int sub__topic_tokenise(const char *subtopic, char **local_sub, char ***topics, 
 	char *token;
 	int count;
 	int topic_index = 0;
-	int i;
 	size_t len;
 
 	len = strlen(subtopic);
@@ -68,7 +67,7 @@ int sub__topic_tokenise(const char *subtopic, char **local_sub, char ***topics, 
 		return MOSQ_ERR_INVAL;
 	}
 
-	*local_sub = mosquitto__strdup(subtopic);
+	*local_sub = mosquitto_strdup(subtopic);
 	if((*local_sub) == NULL) return MOSQ_ERR_NOMEM;
 
 	count = 0;
@@ -77,9 +76,9 @@ int sub__topic_tokenise(const char *subtopic, char **local_sub, char ***topics, 
 		saveptr = strchr(&saveptr[1], '/');
 		count++;
 	}
-	*topics = mosquitto__calloc((size_t)(count+3) /* 3=$shared,sharename,NULL */, sizeof(char *));
+	*topics = mosquitto_calloc((size_t)(count+3) /* 3=$shared,sharename,NULL */, sizeof(char *));
 	if((*topics) == NULL){
-		mosquitto__free(*local_sub);
+		mosquitto_FREE(*local_sub);
 		return MOSQ_ERR_NOMEM;
 	}
 
@@ -97,8 +96,8 @@ int sub__topic_tokenise(const char *subtopic, char **local_sub, char ***topics, 
 
 	if(!strcmp((*topics)[0], "$share")){
 		if(count < 2){
-			mosquitto__free(*local_sub);
-			mosquitto__free(*topics);
+			mosquitto_FREE(*local_sub);
+			mosquitto_FREE(*topics);
 			return MOSQ_ERR_PROTOCOL;
 		}
 
@@ -106,7 +105,7 @@ int sub__topic_tokenise(const char *subtopic, char **local_sub, char ***topics, 
 			(*sharename) = (*topics)[1];
 		}
 
-		for(i=1; i<count-1; i++){
+		for(int i=1; i<count-1; i++){
 			(*topics)[i] = (*topics)[i+1];
 		}
 		(*topics)[0] = "";

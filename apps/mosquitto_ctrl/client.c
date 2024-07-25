@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2020 Roger Light <roger@atchoo.org>
+Copyright (c) 2020-2021 Roger Light <roger@atchoo.org>
 
 All rights reserved. This program and the accompanying materials
 are made available under the terms of the Eclipse Public License 2.0
@@ -9,6 +9,8 @@ The Eclipse Public License is available at
    https://www.eclipse.org/legal/epl-2.0/
 and the Eclipse Distribution License is available at
   http://www.eclipse.org/org/documents/edl-v10.php.
+
+SPDX-License-Identifier: EPL-2.0 OR BSD-3-Clause
 
 Contributors:
    Roger Light - initial implementation and documentation.
@@ -25,7 +27,7 @@ Contributors:
 #include <time.h>
 
 #include <mosquitto.h>
-#include <mqtt_protocol.h>
+#include <mosquitto/mqtt_protocol.h>
 #include "mosquitto_ctrl.h"
 
 static int run = 1;
@@ -33,6 +35,8 @@ static int run = 1;
 static void on_message(struct mosquitto *mosq, void *obj, const struct mosquitto_message *msg, const mosquitto_property *properties)
 {
 	struct mosq_ctrl *ctrl = obj;
+
+	UNUSED(properties);
 
 	if(ctrl->payload_callback){
 		ctrl->payload_callback(ctrl, msg->payloadlen, msg->payload);
@@ -45,6 +49,10 @@ static void on_message(struct mosquitto *mosq, void *obj, const struct mosquitto
 
 static void on_publish(struct mosquitto *mosq, void *obj, int mid, int reason_code, const mosquitto_property *properties)
 {
+	UNUSED(obj);
+	UNUSED(mid);
+	UNUSED(properties);
+
 	if(reason_code > 127){
 		fprintf(stderr, "Publish error: %s\n", mosquitto_reason_string(reason_code));
 		run = 0;
@@ -56,6 +64,9 @@ static void on_publish(struct mosquitto *mosq, void *obj, int mid, int reason_co
 static void on_subscribe(struct mosquitto *mosq, void *obj, int mid, int qos_count, const int *granted_qos, const mosquitto_property *properties)
 {
 	struct mosq_ctrl *ctrl = obj;
+
+	UNUSED(mid);
+	UNUSED(properties);
 
 	if(qos_count == 1){
 		if(granted_qos[0] < 128){
@@ -85,6 +96,9 @@ static void on_connect(struct mosquitto *mosq, void *obj, int reason_code, int f
 {
 	struct mosq_ctrl *ctrl = obj;
 
+	UNUSED(flags);
+	UNUSED(properties);
+
 	if(reason_code == 0){
 		if(ctrl->response_topic){
 			mosquitto_subscribe(mosq, NULL, ctrl->response_topic, ctrl->cfg.qos);
@@ -112,6 +126,10 @@ int client_request_response(struct mosq_ctrl *ctrl)
 	struct mosquitto *mosq;
 	int rc;
 	time_t start;
+
+	if(ctrl->cfg.cafile == NULL && ctrl->cfg.capath == NULL){
+		fprintf(stderr, "Warning: You are running mosquitto_ctrl without encryption.\nThis means all of the configuration changes you are making are visible on the network, including passwords.\n\n");
+	}
 
 	mosquitto_lib_init();
 
